@@ -79,8 +79,19 @@ describe('the setup console, running', () => {
       cwd: ROOT, env: { ...process.env, SETUP_PORT: String(port), SETUP_NO_OPEN: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
+    // 15s was not enough on a loaded machine: this hook failed once during a
+    // full-suite run and passed on its own seconds later. A test that fails
+    // when the box is busy teaches you to re-run it until it agrees, which is
+    // the one habit the gates in this repo exist to prevent. So it waits
+    // longer, and when it does give up it says what the process actually said
+    // instead of only that nothing arrived.
+    let said = ''
+    proc.stderr.on('data', (b) => { said += String(b) })
     token = await new Promise((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error('the console never printed a link')), 15000)
+      const t = setTimeout(
+        () => reject(new Error(`the console never printed a link in 45s${said ? `. It said: ${said.trim()}` : ', and said nothing on stderr'}`)),
+        45000,
+      )
       proc.stdout.on('data', (b) => {
         const m = String(b).match(/\?t=([0-9a-f]+)/)
         if (m) { clearTimeout(t); resolve(m[1]) }

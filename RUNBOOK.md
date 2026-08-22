@@ -1,372 +1,322 @@
 # DNS Migration Runbook
 
-Provider-agnostic, machine-agnostic domain cutover.
+Move a domain onto Cloudflare without dropping a record, and prove it before
+the registrar is touched.
 
-- **Current mission:** mumchimp.com
-- **Started:** 2026-08-22
-- **Status:** Zone created, empty. Registrar locked. Token rotated.
-
-This file is the single source of truth. If it conflicts with chat, this file wins.
-
----
-
-## What exists in the code today
-
-The phases below are the target design. Some of the commands they name are not
-written yet. This table is measured against the tree at the time of writing, not
-remembered, so that nobody runs a command from this file and gets
-`usage:` back and assumes they typed it wrong.
-
-| Command in this runbook | In the code today |
-|---|---|
-| `node scripts/migrate-domain.mjs <domain> [--watch] [--dry-run]` | **yes** — this is the whole tool |
-| `./scripts/cf-bootstrap.sh [--full] [--forget] [--force] [--check]` | **yes** |
-| `whois <domain>` lock check | **yes**, as `registrarLock()` inside the migration |
-| `--phase=discover\|validate\|prepare\|verify\|cutover\|lockdown` | **yes**, in `scripts/console/phases.mjs`. With no `--phase` a run does discover → validate → prepare → verify and stops before cutover |
-| `--rollback` | **yes** — it undoes exactly what the run wrote, and refuses to delete a zone it did not create or that has anything else in it |
-| `./scripts/dns-baseline.sh` | **not written, and will not be** — `--phase=discover` writes the baseline into `.migration/<domain>.json`, so a separate script would be a second implementation of it |
-| `./scripts/cf-bootstrap.sh --validate-only` | **not written** — the flag that answers this is `--check` |
-| Section 5 mock API server and failure matrix | **yes** — `test/helpers/mock-cf-api.mjs` is an HTTP server the real tool talks to through `CF_API_BASE`, and `test/migration-phases.test.js` runs 17 scenarios through it |
-
-**`CF_TOKEN=` is not the variable.** The code reads `CF_API_TOKEN`. And a token
-on a command line is readable by every process on the box through `ps` and lands
-in shell history, so prefer the keychain (`./scripts/cf-bootstrap.sh`) and use the
-environment variable only where there is no store, as in CI.
+- **Last run:** mumchimp.com, 2026-08-22 — complete, locked, serving
+- **Tests:** `npm test`
+- **Rule:** if this file disagrees with the code, the code is right and this
+  file is a bug. Every command below was run.
 
 ---
 
-## 0. Philosophy
+## What the tool does, and the one thing it does not
 
-- **Provider-agnostic:** Cloudflare, Route53, Bunny, whatever. The phases are the
-  same. Only the API calls change.
-- **Machine-agnostic:** works on macOS, Linux, CI, or a Docker container. No
-  `pbpaste` assumptions. No hardcoded paths.
-- **Zero side effects on failure:** if any gate fails, the system must be in the
-  same state as before the run.
-- **Human-verified cutover:** the tool prepares everything. A human confirms the
-  last mile.
+It reads the zone off whatever nameservers answer today, proves the credential
+can do the whole job before doing any of it, writes every record in, and
+refuses to print the go-ahead until both sides answer identically.
+
+**It never changes the registrar.** 123-reg has no public API for a retail
+account, so the nameserver switch is two strings pasted into one form by a
+person, and both lock toggles are yours. `--phase=cutover` *prints* those
+strings and gates them. It does not switch anything. Any document saying
+otherwise is wrong, and reading it that way is how a domain goes dark.
 
 ---
 
-## 1. Pre-flight checklist (do this first, every time)
+## Quick start
 
 ```bash
-# 1.1 Baseline the current live state
-./scripts/dns-baseline.sh mumchimp.com > /tmp/mumchimp-baseline-$(date +%s).json
+./scripts/cf-bootstrap.sh                              # once per machine
+node scripts/migrate-domain.mjs example.com            # discover → validate → prepare → verify
+#   ... you switch the nameservers at the registrar ...
+node scripts/migrate-domain.mjs example.com --phase=lockdown
+```
 
-# 1.2 Verify registrar lock status
-whois mumchimp.com | grep 'Domain Status'
-# EXPECTED: clientUpdateProhibited present = LOCKED (safe)
-#           absent = UNLOCKED (dangerous if not ready)
+That is the whole thing. The first command stops at `Identical.` and prints
+your registrar step; the second confirms the world agrees and the lock is back
+on.
 
-# 1.3 Verify current resolution
-for r in A MX TXT NS SOA; do
-  dig +short $r mumchimp.com @1.1.1.1
-done
+`--watch` after the first command makes it sit and wait for your registrar
+change instead of exiting.
 
-# 1.4 Verify the credential (explicit or env — never clipboard in CI)
+---
+
+## Prerequisites
+
+### 1. A Cloudflare token
+
+`./scripts/cf-bootstrap.sh` opens the page and watches the clipboard. Two
+permission rows, and the second is the one that gets missed:
+
+| Scope | Resource | Level |
+|---|---|---|
+| Zone | Zone | Edit |
+| Zone | DNS | Edit |
+
+Zone Resources: **Include · Specific zone · your domain**.
+
+The page's URL carries `permissionGroupKeys` and **the dashboard ignores it** —
+the form opens blank with nothing ticked. A run has already come back with
+`Zone:Edit` and no `DNS:Edit` and stopped at the first record. The tool prints
+the rows for that reason.
+
+Copy either the token or the `curl` example beside it; both work, the tool
+reads the token out of the `Authorization: Bearer` header. The value goes
+straight into the login keychain (`security` is fed on **stdin**, never argv —
+`-w SECRET` as an argument is readable in `ps`). It is never printed.
+
+Optional third row, `User · API Tokens · Edit`, via `--full`: it lets each run
+mint a one-hour token and delete it at the end. It also makes the stored
+credential able to do anything the account can do. mumchimp.com was migrated
+**without** it — two rows, one zone of blast radius, ephemeral tokens off.
+
+```bash
+./scripts/cf-bootstrap.sh --check     # is this machine set up? opens nothing
+./scripts/cf-bootstrap.sh --force     # replace the stored credential
+./scripts/cf-bootstrap.sh --forget    # remove it
+```
+
+### 2. Registrar access
+
+You need to be able to toggle Domain Lock. Nothing else.
+
+---
+
+## Pre-flight
+
+```bash
+# What is live right now, from outside the tool
+dig +short example.com A; dig +short example.com MX; dig +short example.com NS
+whois example.com | grep -i 'domain status'
+#   clientUpdateProhibited present = LOCKED (safe, and blocks the switch)
+#   absent = UNLOCKED
+
 ./scripts/cf-bootstrap.sh --check
 ```
 
-**STOP if any of these fail. Do not proceed to phase 2.**
+---
+
+## The six phases
+
+State lives in `.migration/<domain>.json`. Each phase refuses to run before the
+one it depends on. Override the directory with `MIGRATION_STATE_DIR`.
+
+### 1. DISCOVER — read the current zone
+
+```bash
+node scripts/migrate-domain.mjs example.com --phase=discover
+```
+
+Asks the nameservers that answer today and writes the baseline. Prints every
+record and the count.
+
+**Gate:** it says so loudly if there is no `MX` — a domain that takes mail and
+shows no `MX` means the sweep missed records, and continuing loses mail.
+
+### 2. VALIDATE — prove the credential before using it
+
+```bash
+node scripts/migrate-domain.mjs example.com --phase=validate
+```
+
+Zone read first, because every later check is phrased in terms of a zone and a
+token that cannot list zones fails all of them for one reason. Then zone
+create, then a DNS write probe.
+
+**Net zero side effects on failure.** Whether a token can write DNS is a
+question about a zone, so there has to be a zone to ask about. If one had to be
+created to ask, and the answer is no, it is deleted again:
+
+```
+this credential cannot write DNS records
+  what is missing: Zone → DNS → Edit
+  the zone this run created has been removed - nothing was left behind
+```
+
+It records `zoneCreatedByUs`. That field is the single reason rollback is safe:
+it is how the tool knows whether deleting a zone is undoing its own work or
+destroying someone else's.
+
+### 3. PREPARE — write the records in
+
+```bash
+node scripts/migrate-domain.mjs example.com --phase=prepare
+```
+
+Every record, all grey-clouded. Cloudflare becomes authoritative DNS, not a
+proxy, so no traffic path changes. Idempotent: `+` added, `=` already there.
+
+### 4. VERIFY — the gate
+
+```bash
+node scripts/migrate-domain.mjs example.com --phase=verify
+```
+
+Asks both nameserver sets the same questions and compares the answers. Re-asks
+up to 6 times with 8-second waits, because a record written a second ago is not
+yet a record the edge answers with:
+
+```
+  8 not answered by Cloudflare yet - waiting (1/5)
+  Identical. Cloudflare answers exactly as the old nameservers do.
+```
+
+Anything else prints `NOT READY. Do not touch the registrar.` and names each
+missing record. **A verify pass goes stale after five minutes** — cutover
+refuses an older one rather than trusting it.
+
+### 5. CUTOVER — your step, printed and gated
+
+```bash
+node scripts/migrate-domain.mjs example.com --phase=cutover
+```
+
+Refuses unless verify passed within five minutes **and** the domain is
+unlocked. Then it prints the URL and the two nameservers to paste. It changes
+nothing itself.
+
+Order matters, and it is the reverse of the obvious one:
+
+1. All records written, verify says `Identical`
+2. **Then** unlock at the registrar
+3. Paste the nameservers
+4. **Re-lock immediately**
+
+A domain unlocked before the records are staged is a domain unlocked for no
+reason, for longer.
+
+### 6. LOCKDOWN — did it land, and is the door shut
+
+```bash
+node scripts/migrate-domain.mjs example.com --phase=lockdown
+```
+
+Asks `1.1.1.1`, `8.8.8.8` and `9.9.9.9` independently, then checks the
+registrar lock. It refuses to say complete while the lock is off:
+
+```
+propagated, but the registrar lock is still off
+  1.1.1.1: danica.ns.cloudflare.com,tony.ns.cloudflare.com
+```
+
+Success is one line: `every resolver answers with the new nameservers, and the
+lock is back on`.
 
 ---
 
-## 2. The six phases
+## Rollback
 
-### Phase 1: DISCOVER
-
-**Goal:** know exactly what exists today without changing anything.
+**Before the registrar switch — safe, and the normal case.**
 
 ```bash
-node scripts/migrate-domain.mjs mumchimp.com --phase=discover
+node scripts/migrate-domain.mjs example.com --rollback
 ```
 
-Outputs:
+Removes the records this run wrote. Deletes the zone **only** if
+`zoneCreatedByUs` is true; otherwise it keeps it and says why. Live traffic was
+never on Cloudflare, so nothing outside changes.
 
-- `discovered-zone.json` — current records at the existing nameservers
-- `discovered-registrar.json` — lock status, expiry, current nameservers
-
-**Gate:** discovery must return the expected record count. If it returns 0, check
-the domain name.
-
-### Phase 2: VALIDATE
-
-**Goal:** prove we have permission to do everything before touching state.
-
-```bash
-node scripts/migrate-domain.mjs mumchimp.com --phase=validate
-```
-
-Checks, in order:
-
-1. Token can read zones.
-2. Token can edit DNS records.
-3. If the target zone exists, the token can write a probe record to it.
-4. If the target zone does not exist, the token can create zones.
-
-**Gate:** all four must pass. If the zone exists but we cannot write DNS, STOP.
-If the zone does not exist but we cannot create zones, STOP.
-
-**Zero-side-effect rule:** if we create a zone to probe it, we delete it on any
-validation failure.
-
-### Phase 3: PREPARE
-
-**Goal:** create or update the target zone with all records. Live traffic still
-goes to the old nameservers.
-
-```bash
-node scripts/migrate-domain.mjs mumchimp.com --phase=prepare
-```
-
-What happens:
-
-- Idempotently create the zone if missing.
-- Upsert all records from discovery.
-- Run an internal diff: discovered vs target.
-
-**Gate:** the internal diff must show 0 differences.
-
-### Phase 4: VERIFY
-
-**Goal:** prove the new nameservers answer identically to the old ones.
-
-```bash
-node scripts/migrate-domain.mjs mumchimp.com --phase=verify --watch
-```
-
-This queries both nameserver sets, old and new, and compares the answers.
-
-**Gate:** dns-diff reports `Identical` for A, AAAA, MX, TXT, NS, SOA, CNAME.
-
-**CRITICAL:** do not proceed past this gate until it says `Identical`. The zone
-is empty until this passes.
-
-### Phase 5: CUTOVER
-
-**Goal:** switch the registrar to the new nameservers.
-
-```bash
-node scripts/migrate-domain.mjs mumchimp.com --phase=cutover --dry-run
-```
-
-This prints the current nameservers, the proposed nameservers, the lock status
-and the rollback command.
-
-**Human gate:** review the output. If it is correct, run it without `--dry-run`.
-
-```bash
-node scripts/migrate-domain.mjs mumchimp.com --phase=cutover
-```
-
-Prerequisites enforced by the tool:
-
-- `verify` passed within the last 5 minutes.
-- The registrar is unlocked, or `--force` with explicit acknowledgment.
-
-### Phase 6: LOCKDOWN
-
-**Goal:** re-lock the domain and verify global propagation.
-
-```bash
-node scripts/migrate-domain.mjs mumchimp.com --phase=lockdown
-```
-
-Checks:
-
-- Re-enable the registrar lock.
-- Query several public resolvers (1.1.1.1, 8.8.8.8, 9.9.9.9) for the new
-  nameservers.
-- Verify the old nameservers are no longer authoritative.
-
-**Gate:** all resolvers return the new nameservers. The old ones return REFUSED
-or answer non-authoritatively.
+**After the switch — put the old nameservers back at the registrar.** Unlock,
+paste the old pair (the tool prints them and they are in the state file under
+`oldNameServers`), re-lock. Records are still live on the old side unless you
+deleted them there, which this tool never does.
 
 ---
 
-## 3. Rollback procedures
+## Notifications
 
-### Rollback before cutover (safe)
-
-```bash
-# Delete the Cloudflare zone entirely
-node scripts/migrate-domain.mjs mumchimp.com --rollback=prepare
-```
-
-Live traffic is unaffected. You are back to phase 0.
-
-### Rollback after cutover (dangerous, time-sensitive)
+Off unless configured. Nothing to remember, no flag to pass — set the variables
+and events start arriving. `--no-notify` suppresses a run.
 
 ```bash
-# Revert nameservers at the registrar
-node scripts/migrate-domain.mjs mumchimp.com --rollback=cutover
+export TELEGRAM_BOT_TOKEN=…      # see docs/TELEGRAM.md
+export TELEGRAM_CHAT_ID=…
+export OPS_WEBHOOK_URL=…         # see docs/OPS_PORTAL.md
+export OPS_WEBHOOK_SECRET=…      # signs the request; never sent
+
+node scripts/lib/notify.mjs --test    # exits non-zero if a channel failed
 ```
 
-This requires the registrar to still be unlocked. If you have already locked it,
-unlock first.
+**A notification can never fail the migration.** A dead endpoint, a revoked bot
+token, a hung host and an unset variable all end the same way: the run carries
+on and the reason is on stderr, with every secret stripped out of it.
 
-### Emergency: zone deleted accidentally
-
-If the target zone is deleted after cutover:
-
-1. Re-create the zone immediately.
-2. Re-run `prepare` — the records are cached in `discovered-zone.json`.
-3. Do **not** re-run `cutover`. The nameservers already point at Cloudflare.
+The one worth a phone alert is `migration.cutover_ready` — everything is staged
+and the registrar is the only thing left.
 
 ---
 
-## 4. Current state: mumchimp.com (2026-08-22)
+## Troubleshooting
 
-| Item | Value | Status |
+| What you see | What it means | What to do |
 |---|---|---|
-| Live NS | ns03.domaincontrol.com, ns04.domaincontrol.com | ACTIVE |
-| Live A | 66.241.124.37 | OK |
-| Live MX | 5 smtp.google.com | OK |
-| Cloudflare zone | `f52b061676b12e4650d87d3ce57d4896` | EMPTY (0 records) |
-| Domain lock | `clientUpdateProhibited` | ON (safe) |
-| Token status | Rotated, needs Zone:Read + DNS:Edit | PENDING |
-
-### Exact next steps (manual drill)
-
-1. Create a new Cloudflare token:
-   - Zone · DNS · Edit
-   - Zone · Zone · Read
-   - Resources: Include · Specific zone · mumchimp.com
-2. Store it:
-   ```bash
-   ./scripts/cf-bootstrap.sh
-   ```
-   It watches the clipboard, so press the copy button on the token page and
-   nothing has to be typed or pasted. It refuses to store a token that cannot
-   write DNS.
-3. Run prepare and verify:
-   ```bash
-   node scripts/migrate-domain.mjs mumchimp.com --watch
-   ```
-4. Wait for `Identical`.
-5. Unlock the domain at 123-reg.
-6. Run cutover, dry run first:
-   ```bash
-   node scripts/migrate-domain.mjs mumchimp.com --phase=cutover --dry-run
-   ```
-   If it is correct, run it without `--dry-run`. Until that flag exists, the
-   cutover is the two nameservers pasted into the 123-reg form, which the
-   migration prints for you.
-7. Re-lock the domain.
-8. Run the lockdown verification.
+| `Token valid, but it cannot write DNS` | The second permission row was missed | Add `Zone · DNS · Edit`, then `./scripts/cf-bootstrap.sh --force` |
+| `this credential cannot list zones` | No `Zone · Zone · Read` | Same page, add it |
+| `NOT READY` right after prepare | Edge has not caught up | It now re-asks for ~40s on its own. If it still fails, the records really are missing |
+| `Invalid nameservers` at 123-reg | The domain is locked | `clientUpdateProhibited`. Domain Lock off, switch, back on |
+| `the last verify was N minutes ago` | The pass went stale | Run verify again. This is the gate working |
+| `propagated, but the registrar lock is still off` | Everything landed, lock not restored | Domain Lock on, re-run lockdown |
+| `the domain is locked at the registrar` on cutover | Lock still on | Turn it off, then re-run |
+| `nothing arrived` from the bootstrap | Nothing was copied, or it was not a token | Copy the token or the curl example. It says why it refused |
+| Keychain prompts or `SecKeychainSearchCopyNext` | Keychain locked or Terminal not permitted | `security unlock-keychain`, then re-run |
 
 ---
 
-## 5. Test architecture (future)
+## State
 
-### 5.1 Mock API server
-
-A single-file Node mock implementing the Cloudflare surface we touch:
-
-```
-GET    /zones?name=:domain
-POST   /zones
-DELETE /zones/:id
-GET    /zones/:id/dns_records
-POST   /zones/:id/dns_records
-PUT    /zones/:id/dns_records/:record_id
-DELETE /zones/:id/dns_records/:record_id
-GET    /user/tokens/verify
-```
-
-The mock is stateful. It tracks mutations and can be queried for call order.
-
-### 5.2 Failure-injection matrix
-
-| Test | Token | Zone exists | DNS write | Expected |
-|---|---|---|---|---|
-| `test-invalid-token` | invalid | — | — | Rejects before any mutation. `mutations == []`. |
-| `test-no-zone-read` | no Zone:Read | exists | — | "Needs Zone:Read". No zone queries. |
-| `test-no-dns-edit` | no DNS:Edit | exists | — | Probes zone, fails, stops. Zone untouched. |
-| `test-no-dns-edit-empty` | no DNS:Edit | missing | fails | Creates zone, probes, deletes zone, stops. |
-| `test-happy-create` | all perms | missing | ok | Creates zone, writes records, verifies. |
-| `test-happy-existing` | all perms | exists | ok | Skips create, writes records, verifies. |
-| `test-partial-failure` | all perms | missing | fails on record 4 | Records 1-3 deleted. Zone deleted. |
-| `test-foreign-zone` | no DNS:Edit | other zone exists | — | Probes the other zone, fails, stops. Never deletes somebody else's zone. |
-
-### 5.3 State-machine invariants, asserted in every test
-
-```js
-// Invariant 1: No mutation before validation
-assert.strictEqual(api.mutations.length, 0, 'mutated before validation')
-
-// Invariant 2: If the zone pre-existed, it is never deleted
-if (scenario.zonePreExists) {
-  assert(api.deletedZones.length === 0, 'deleted a zone we did not create')
-}
-
-// Invariant 3: Call order
-const callOrder = api.calls.map((c) => c.method + ' ' + c.path)
-if (scenario.zoneMissing && !scenario.canWriteDns) {
-  const createIndex = callOrder.indexOf('POST /zones')
-  const deleteIndex = callOrder.indexOf('DELETE /zones')
-  assert(createIndex < deleteIndex, 'zone was not deleted after failed probe')
-}
-```
-
-### 5.4 Clipboard and I/O layer tests
-
-- Clipboard starts with a 2202-character document, then the token is copied.
-- Token with surrounding whitespace.
-- Rapid double copy: the wrong thing, then the right thing.
-- `pbpaste` / `xclip` / `wl-copy` unavailable, so it falls back to a prompt.
-- Non-TTY, so it requires an explicit `--token` or environment variable.
-
-### 5.5 End-to-end drill on a throwaway domain
-
-Monthly, or per release:
-
-1. Buy a $3 domain.
-2. Point it at old nameservers, add A and MX.
-3. Run the full six-phase migration.
-4. Verify resolution.
-5. Clean up.
-
----
-
-## 6. Decision log
-
-| Date | Decision | Rationale |
+| File | What it is | Safe to delete? |
 |---|---|---|
-| 2026-08-22 | Token rotated after transcript exposure | The old token returned 401, confirmed dead |
-| 2026-08-22 | Probe before mutate, enforced | Zero side effects on failure |
-| 2026-08-22 | The clipboard's current contents are a candidate, not a baseline | The watcher used to snapshot the clipboard at startup and exclude it, so copying the token first — the obvious thing to do — meant waiting out the whole window in silence |
-| 2026-08-22 | Cutover blocked until dns-diff says `Identical` | Prevents switching to an empty zone |
-| 2026-08-22 | Domain lock treated as a safety net, not an error | `clientUpdateProhibited` is the correct default |
+| `.migration/<domain>.json` | Baseline records, zone id, nameservers, `zoneCreatedByUs`, timestamps | Not while a migration is in flight — rollback and every gate read it |
+
+One file per domain, not two. `MIGRATION_STATE_DIR` moves it.
 
 ---
 
-## 7. Checklist: starting afresh (the drill)
+## Tests
 
-Use this to rehearse on a new domain, or after resetting state.
+```bash
+npm test               # everything, no network
+npm run matrix         # the migration failure matrix alone
+npm run mock-cf        # the mock Cloudflare API on its own
+```
 
-- [ ] Domain purchased or controlled
-- [ ] Old nameservers have records (A, MX, TXT and so on)
-- [ ] Target provider account ready
-- [ ] Token created with the correct permissions
-- [ ] Token stored securely: keychain, environment, or an explicit argument
-- [ ] `./scripts/dns-baseline.sh <domain>` run and the output saved
-- [ ] `--phase=discover` run, and the output matches the baseline
-- [ ] `--phase=validate` passes all checks
-- [ ] `--phase=prepare` completes with 0 diff
-- [ ] `--phase=verify --watch` says `Identical`
-- [ ] Registrar unlocked, if it was locked
-- [ ] `--phase=cutover --dry-run` reviewed and approved
-- [ ] `--phase=cutover` executed
-- [ ] Registrar re-locked
-- [ ] `--phase=lockdown` passes on all public resolvers
-- [ ] Old nameservers return non-authoritative or REFUSED
-- [ ] Mail flow verified: send and receive
-- [ ] Site reachable over HTTPS
+The matrix drives the real phases over real HTTP against
+`test/helpers/mock-cf-api.mjs`. That matters: a stubbed fetch agrees with
+whatever the caller does to it, and the two failures that actually bit — `GET
+/accounts` answering 200 with an empty list, and one DNS permission covering
+both read and write — are facts about the wire, not about the code.
 
 ---
 
-File version: 1.0
-Last updated: 2026-08-22
-Next review: after the mumchimp cutover completes
+## Decisions, and what was rejected
+
+| Decision | Why | Rejected |
+|---|---|---|
+| API first, browser last | Only the registrar has no API | "Log in and tell me what you see" |
+| Zone-scoped two-row token | One domain of blast radius if it leaks | Account token with `API Tokens · Edit`, which buys ephemeral tokens for account-root reach |
+| Probe before mutate, net zero on failure | A failed run must leave nothing behind | Create first, apologise later |
+| Verify re-asks before failing | A gate that cries wolf on its own writes teaches you to re-run it until it agrees | Instant single check |
+| Signature over the body, never the key | A header carrying the shared secret hands it to whoever receives one request | `X-Migration-Secret: <the secret>` |
+| Notifications cannot fail the run | A status message is not worth a dead migration | Throw on webhook error |
+| `security` fed on stdin | `-w SECRET` in argv is readable in `ps` — measured, three lines | Passing the token as an argument |
+
+---
+
+## Starting afresh — the checklist
+
+- [ ] Domain resolves, and you know what it serves (site, api, **mail**)
+- [ ] `./scripts/cf-bootstrap.sh --check` passes
+- [ ] `--phase=discover` — record count matches what you expect, `MX` present if it takes mail
+- [ ] `--phase=validate` passes
+- [ ] `--phase=prepare` — every line `+` or `=`
+- [ ] `--phase=verify` says `Identical`
+- [ ] Registrar unlocked
+- [ ] Nameservers pasted
+- [ ] Registrar **re-locked**
+- [ ] `--phase=lockdown` passes on all three resolvers
+- [ ] `whois` shows `clientUpdateProhibited` back
+- [ ] `dig` from two resolvers: A, MX and any `CNAME` answer as before
+- [ ] SPF and DKIM intact — check the `TXT` records by eye, both includes if you use two senders
+- [ ] Send **and receive** a real mail
+- [ ] Site loads over HTTPS

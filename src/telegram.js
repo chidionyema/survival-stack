@@ -2,8 +2,11 @@ const API = 'https://api.telegram.org/bot'
 
 async function call(env, method, payload) {
   let json = { ok: false }
+  // env.FETCH is the same kind of seam as TELEGRAM_API_BASE: unset in the
+  // Worker, set by a caller that has to apply its own timeout or run offline.
+  const doFetch = env.FETCH || fetch
   try {
-    const res = await fetch(`${env.TELEGRAM_API_BASE || API}${env.TELEGRAM_BOT_TOKEN}/${method}`, {
+    const res = await doFetch(`${env.TELEGRAM_API_BASE || API}${env.TELEGRAM_BOT_TOKEN}/${method}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload),

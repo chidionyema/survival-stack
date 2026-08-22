@@ -18,6 +18,7 @@ import * as z from './console/zone.mjs'
 import * as ph from './console/phases.mjs'
 import * as auth from './lib/cf-auth.mjs'
 import { checkCfToken } from './console/checks.mjs'
+import { notify } from './lib/notify.mjs'
 
 const b = (s) => `\x1b[1m${s}\x1b[0m`
 const dim = (s) => `\x1b[2m${s}\x1b[0m`
@@ -34,11 +35,22 @@ const watch = Boolean(flag('watch'))
 const dryRun = Boolean(flag('dry-run'))
 const rollback = Boolean(flag('rollback'))
 const phase = value('phase')
+// Notifications are on when they are configured, off when they are not. There
+// is no flag to remember. --no-notify is for the run you do not want on the
+// record, and for tests.
+const quiet = Boolean(flag('no-notify'))
+
+// What phase we are in, so a failure can say so without being handed it.
+let current = null
+const note = async (event, extra = {}) => {
+  if (quiet) return
+  await notify({ event, domain, phase: current, ...extra })
+}
 
 if (!domain || domain.startsWith('-') || (phase && !ph.PHASES.includes(phase))) {
   say('usage: node scripts/migrate-domain.mjs <domain> [--watch] [--dry-run]')
   say('                                       [--phase=' + ph.PHASES.join('|') + ']')
-  say('                                       [--rollback]')
+  say('                                       [--rollback] [--no-notify]')
   process.exit(2)
 }
 
@@ -56,6 +68,7 @@ async function halt(r) {
     if (r.rolledBack.keptBecause) say(dim(`  the zone was kept - ${r.rolledBack.keptBecause}`))
   }
   if (r.need && /DNS|Zone/.test(r.need)) { say(''); say('  ' + auth.TOKEN_URL) }
+  await note('migration.phase_failed', { status: 'blocked', error: r.stop, need: r.need || null })
   await cleanUp()
   process.exit(1)
 }
@@ -153,6 +166,9 @@ if (rollback) {
     : dim(`  the zone was kept — ${r.keptBecause || 'it was not created by a run'}`))
   say('')
   say(dim('  Live traffic was never on Cloudflare, so nothing outside changed.'))
+  await note('migration.rollback', {
+    status: 'done', records: r.recordsRemoved, zoneDeleted: Boolean(r.zoneDeleted),
+  })
   await finish(0)
 }
 
@@ -161,6 +177,13 @@ if (rollback) {
 const only = phase ? [phase] : ['discover', 'validate', 'prepare', 'verify']
 
 for (const step of only) {
+  current = step
+  const startedAt = Date.now()
+  const completed = (extra = {}) => note('migration.phase_complete', {
+    status: 'ok', seconds: Math.round((Date.now() - startedAt) / 1000), ...extra,
+  })
+  await note('migration.phase_start', { status: 'running' })
+
   if (step === 'discover') {
     say('')
     say(b(`Reading ${domain} from the nameservers answering for it now`))
@@ -173,6 +196,7 @@ for (const step of only) {
       say(red('  no MX — if this domain takes mail, the sweep missed it. Stop.'))
     }
     if (dryRun) { say(''); say('--dry-run: nothing was created.'); await finish(0) }
+    await completed({ records: r.records.length })
   }
 
   if (step === 'validate') {
@@ -185,6 +209,7 @@ for (const step of only) {
       say(dim('  waiting for its own scan, as a second opinion on the record list'))
       await new Promise((res) => setTimeout(res, 20000))
     }
+    await completed({ zoneCreated: Boolean(r.fresh), zoneStatus: r.zone.status })
   }
 
   if (step === 'prepare') {
@@ -199,6 +224,7 @@ for (const step of only) {
     })
     if (!r.ok) await halt(r)
     say(dim(`  ${r.added} written, ${r.already} already there`))
+    await completed({ records: r.added + r.already, written: r.added })
   }
 
   if (step === 'verify') {
@@ -218,12 +244,17 @@ for (const step of only) {
     for (const k of r.diff.extra) say(dim('  extra on Cloudflare:   ') + k.slice(0, 100))
     say('')
     say(grn(b('Identical. Cloudflare answers exactly as the old nameservers do.')))
+    await completed({ status: 'identical', records: r.diff.total })
+    // The one worth waking up for: everything is staged and the registrar is
+    // the only thing left.
+    await note('migration.cutover_ready', { status: 'ready', records: r.diff.total })
   }
 
   if (step === 'cutover') {
     const r = await ph.cutover(domain)
     if (!r.ok) await halt(r)
     printRegistrarStep(r.from, r.to)
+    await note('migration.cutover_ready', { status: 'unlocked, waiting for the paste', to: r.to })
     await finish(0)
   }
 
@@ -237,6 +268,8 @@ for (const step of only) {
       await finish(1)
     }
     say(grn('  every resolver answers with the new nameservers, and the lock is back on'))
+    await completed({ status: 'complete' })
+    await note('migration.lockdown_done', { status: 'complete' })
     await finish(0)
   }
 }
@@ -290,6 +323,8 @@ for (let i = 0; i < 720; i++) {
     say('')
     say(grn(b('Live on Cloudflare.')) + ` ${domain} is answered by ${state.newNameServers.join(' and ')}.`)
     say(dim('  Next: node scripts/migrate-domain.mjs ' + domain + ' --phase=lockdown'))
+    current = 'cutover'
+    await note('migration.cutover_done', { status: 'live on cloudflare', to: state.newNameServers })
     process.exit(0)
   }
   process.stdout.write(`\r  ${new Date().toISOString().slice(11, 19)}  still ${now.join(', ') || 'unresolved'}   `)
