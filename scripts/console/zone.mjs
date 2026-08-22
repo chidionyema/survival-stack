@@ -10,6 +10,7 @@
 // every record into Cloudflare through the API, and then asks both sides the
 // same questions and refuses to say ready unless the answers match.
 import { Resolver, promises as dnsp } from 'node:dns'
+import { execFile } from 'node:child_process'
 
 const CF = 'https://api.cloudflare.com/client/v4'
 
@@ -193,6 +194,29 @@ export async function compare(domain, oldIps, newIps) {
     extra: [...b].filter((k) => !a.has(k)).sort(),
     ready: [...a].every((k) => b.has(k)),
   }
+}
+
+// Whether the registry will accept a nameserver change at all.
+//
+// The incident: the founder was given the two Cloudflare nameservers, pasted
+// them into 123-reg, and got "Invalid nameservers". Nothing was wrong with the
+// nameservers - both resolve, both already answer authoritatively for the
+// zone. The domain carried clientUpdateProhibited, which is the registrar lock,
+// and it blocks updates to the domain object including its nameserver set. The
+// form reports that as a problem with what was typed.
+//
+// One whois call before the registrar step turns a mystifying rejection into a
+// sentence naming the toggle to turn off. It degrades quietly: no whois binary,
+// or a registry that does not answer, means no claim either way.
+export async function registrarLock(domain) {
+  const out = await new Promise((resolve) => {
+    execFile('whois', [domain], { timeout: 15000 }, (err, stdout) => resolve(err && !stdout ? null : String(stdout || '')))
+  })
+  if (out === null) return { known: false, locked: false, statuses: [] }
+  const statuses = [...new Set(
+    [...out.matchAll(/^\s*Domain Status:\s*(client\w+)/gim)].map((m) => m[1]),
+  )]
+  return { known: true, locked: statuses.includes('clientUpdateProhibited'), statuses }
 }
 
 export async function nameserversNowServing(domain) {

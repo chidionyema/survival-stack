@@ -4,6 +4,24 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as z from '../scripts/console/zone.mjs'
 
+// whois is a binary, so it is stubbed by putting a fake one first on PATH.
+import { mkdtemp, writeFile, chmod } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+const withWhois = async (output, fn) => {
+  const dir = await mkdtemp(join(tmpdir(), 'whois-'))
+  const bin = join(dir, 'whois')
+  await writeFile(bin, output === null
+    ? '#!/bin/sh\nexit 127\n'
+    : `#!/bin/sh\ncat <<'WEOF'\n${output}\nWEOF\n`)
+  await chmod(bin, 0o755)
+  const had = process.env.PATH
+  process.env.PATH = dir + ':' + had   // the stub wins; /bin stays reachable for cat
+  try { return await fn() } finally { process.env.PATH = had }
+}
+
+
 const withFetch = async (handler, fn) => {
   const real = globalThis.fetch
   globalThis.fetch = handler
@@ -52,4 +70,39 @@ test('incident: Zone:Edit without DNS:Edit refused eight writes and named no per
     return reply([])
   }, () => z.dnsReachable('t', 'z1'))
   assert.equal(allowed, true, 'an empty zone was mistaken for no permission')
+})
+
+test('incident: "Invalid nameservers" was a registrar lock, not a nameserver', async () => {
+  // Both Cloudflare nameservers resolved, both already answered authoritatively
+  // for the zone, and 123-reg still refused the change with "Invalid
+  // nameservers". The domain carried clientUpdateProhibited - the registrar
+  // lock - which blocks updates to the domain object including its nameserver
+  // set. The form reports that as a problem with what was typed.
+  const { registrarLock } = z
+  assert.equal(typeof registrarLock, 'function')
+
+  // The parse is the part that can rot. whois output varies by registry, so
+  // this pins the shape that was actually seen for mumchimp.com at 123-reg.
+  const locked = await withWhois(`
+   Domain Name: EXAMPLE.COM
+   Registrar: 123-Reg Limited
+   Domain Status: clientDeleteProhibited https://icann.org/epp#clientDeleteProhibited
+   Domain Status: clientTransferProhibited https://icann.org/epp#clientTransferProhibited
+   Domain Status: clientUpdateProhibited https://icann.org/epp#clientUpdateProhibited
+`, () => registrarLock('example.com'))
+  assert.equal(locked.locked, true, 'clientUpdateProhibited was not read as a lock')
+  assert.ok(locked.statuses.includes('clientUpdateProhibited'))
+
+  // Transfer-locked but update-allowed is the normal, fine case. Calling that
+  // locked would send somebody to unlock a domain that is already changeable.
+  const fine = await withWhois(`
+   Domain Status: clientTransferProhibited https://icann.org/epp#clientTransferProhibited
+   Domain Status: ok
+`, () => registrarLock('example.com'))
+  assert.equal(fine.locked, false, 'a transfer lock was mistaken for an update lock')
+
+  // No whois binary is not a claim that the domain is unlocked.
+  const unknown = await withWhois(null, () => registrarLock('example.com'))
+  assert.equal(unknown.known, false)
+  assert.equal(unknown.locked, false, 'unknown must never print the unlock instruction')
 })

@@ -60,3 +60,35 @@ Grade a credential by the call the work actually makes, not by
 says which permission is missing and where to add it.
 
 Guard: `test/incident-cf-permissions.test.js`.
+
+## "Invalid nameservers" at the registrar was the registrar lock
+
+**2026-08-22.** The founder pasted Cloudflare's two nameservers into 123-reg and
+got **Invalid nameservers**. Nothing was wrong with them. Both resolve with A
+and AAAA records, and both already answer authoritatively for `mumchimp.com` —
+`dig SOA mumchimp.com @danica.ns.cloudflare.com` returns NOERROR with the SOA.
+
+The cause was `clientUpdateProhibited` on the domain, which is what 123-reg's
+"domain lock" toggle sets. It blocks updates to the domain object, nameservers
+included, and the form renders that as a complaint about what was typed.
+
+```
+$ whois mumchimp.com | grep 'Domain Status'
+   Domain Status: clientDeleteProhibited
+   Domain Status: clientRenewProhibited
+   Domain Status: clientTransferProhibited
+   Domain Status: clientUpdateProhibited
+```
+
+`clientTransferProhibited` on its own is the normal, fine case — most domains
+carry it and it does not block a nameserver change. Only the update one does.
+
+Guard: `scripts/console/zone.mjs` `registrarLock()`, called at the registrar
+step, printing the toggle to turn off. It degrades quietly: no whois binary
+means no claim either way, never a claim that the domain is unlocked.
+`test/incident-cf-permissions.test.js` pins all three cases.
+
+**The defect underneath it was mine, not the tool's.** The tool only prints the
+nameservers after the record comparison passes, which is the whole point of it.
+I put them in a chat message while the Cloudflare zone was still empty, and the
+founder acted on the message. Nameservers do not get handed over early.

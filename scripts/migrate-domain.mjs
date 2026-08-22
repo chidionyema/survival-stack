@@ -224,8 +224,21 @@ await cleanUp()
 
 // ----------------------------------------------------------- 6. the one step
 
+// Asked here rather than at the top: a locked domain does not stop any of the
+// work above, and telling somebody to go and unlock something 40 minutes before
+// they need it is how they arrive at the form having forgotten.
+const lock = await z.registrarLock(domain)
+
 say('')
 say(b('Your one step, at 123-reg — nowhere else'))
+if (lock.locked) {
+  say('')
+  say(red('  First, turn the domain lock off. It is on right now.'))
+  say(dim(`  The registry has ${lock.statuses.join(', ')} set, which blocks a nameserver`))
+  say(dim('  change. The form does not say that — it says "Invalid nameservers".'))
+  say(dim('  123-reg: Manage Domain → Domain Lock → off. Turn it back on afterwards.'))
+  say('')
+}
 say('  https://www.123-reg.co.uk/secure/cpanel/domain/' + domain + '/manage-nameservers')
 say('  Replace the two nameservers with:')
 say('')
