@@ -55,15 +55,26 @@ export async function platform() {
 export const SERVICE = process.env.CF_TOKEN_SERVICE
   || 'survival-stack-cloudflare-token' + (process.env.CF_TOKEN_TEAM ? `-${process.env.CF_TOKEN_TEAM}` : '')
 
-// A Cloudflare API token is 40 characters of URL-safe base64. Anything else on
-// the clipboard is somebody's password or a paragraph of text, and is ignored
-// without being looked at any harder than this.
-export const TOKEN_SHAPE = /^[A-Za-z0-9_-]{40}$/
+// What a credential is, without claiming to know what Cloudflare's looks like.
+//
+// The incident: this used to be /^[A-Za-z0-9_-]{40}$/. Cloudflare started
+// issuing a `cfut_`-prefixed 53-character form, the clipboard watcher saw a
+// real, active token, decided it was the wrong shape and said nothing at all.
+// It read as "the clipboard is broken" and burned a 30-minute window.
+//
+// So the length is a floor, never an equality, and there is no upper bound.
+// Cloudflare is the only thing that gets to say whether a token is a token.
+// The three checks left are not format guesses:
+//   - a floor, because a 6-character string is a word, not a credential
+//   - no whitespace and no "://", because that is prose or a URL
+//   - a vendor prefix, because checking means SENDING it, and another
+//     company's key must never be handed to Cloudflare to be graded
+export const MIN_TOKEN_LENGTH = 20
 
 // Shape alone is not enough, and the gap matters. Checking a candidate means
-// sending it to Cloudflare as a bearer token, so a 40-character key belonging
-// to somebody else — and several vendors issue exactly that — would be handed
-// to a third party by a tool that was only trying to be helpful. These prefixes
+// sending it to Cloudflare as a bearer token, so a key belonging to somebody
+// else - and several vendors issue plausible-looking ones - would be handed to
+// a third party by a tool that was only trying to be helpful. These prefixes
 // are refused before anything leaves the machine.
 const NOT_OURS = [
   'sk-', 'sk_', 'pk_', 'rk_', 'whsec_',        // OpenAI, Stripe
@@ -77,10 +88,26 @@ const NOT_OURS = [
   'EAAC', 'EAAG', 'r8_', 'tvly-', 'nvapi-', 'ntn_', 'secret_',
 ]
 
-export function looksLikeToken(s) {
+// Returns a reason, never a bare false. A candidate that is turned away in
+// silence is the bug this replaces: the user is owed the sentence that says
+// which of the two things went wrong, the copy or the token.
+export function tokenCandidate(s) {
   const v = String(s || '').trim()
-  if (!TOKEN_SHAPE.test(v)) return false
-  return !NOT_OURS.some((p) => v.startsWith(p))
+  if (!v) return { ok: false, why: 'nothing to check' }
+  if (v.length < MIN_TOKEN_LENGTH) {
+    return { ok: false, why: `${v.length} characters is too short to be a credential` }
+  }
+  if (/\s/.test(v)) return { ok: false, why: 'it contains spaces or newlines, so it is text' }
+  if (v.includes('://')) return { ok: false, why: 'it is a URL' }
+  const vendor = NOT_OURS.find((pfx) => v.startsWith(pfx))
+  if (vendor) {
+    return { ok: false, why: `it starts with "${vendor}" - that is another vendor's key, and sending it to Cloudflare to be checked would leak it` }
+  }
+  return { ok: true }
+}
+
+export function looksLikeToken(s) {
+  return tokenCandidate(s).ok
 }
 
 // The one-click token page. The permission boxes arrive already ticked.
@@ -238,7 +265,7 @@ export async function clipboard() {
 
 // Waits for a token to appear on the clipboard, checks it is real, and returns
 // it. Only runs while the caller has said on screen that it is waiting, only
-// matches the 40-character token shape, and never reports what else was there.
+// sends on what could be a credential, and never reports what else was there.
 export async function waitForTokenOnClipboard({ seconds = 300, onTick = () => {}, validate } = {}) {
   const before = (await clipboard()).trim()
   const tried = new Set([before])
@@ -246,10 +273,17 @@ export async function waitForTokenOnClipboard({ seconds = 300, onTick = () => {}
     const now = (await clipboard()).trim()
     if (now && !tried.has(now)) {
       tried.add(now)
-      if (looksLikeToken(now)) {
+      // Loud on every path. The old version skipped a candidate that failed
+      // the shape test without a word, which is how a real token sat on the
+      // clipboard being ignored. Cloudflare is the validator; this only says
+      // why something never reached it.
+      const c = tokenCandidate(now)
+      if (!c.ok) {
+        onTick(`something was copied and it was not sent to Cloudflare: ${c.why}`)
+      } else {
         const v = validate ? await validate(now) : { ok: true }
         if (v.ok) return { token: now, note: v.note }
-        onTick(`something was copied, but Cloudflare rejected it — ${v.note}`)
+        onTick(`something was copied, but Cloudflare rejected it - ${v.note}`)
       }
     }
     if (i % 20 === 0) onTick(null, Math.round(seconds - i / 2))

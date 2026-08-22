@@ -109,13 +109,30 @@ export async function findZone(token, domain) {
 // zone it cannot transfer — both are guessing names. Two guessers that agree is
 // the closest thing to a listing available without the registrar's own API, and
 // where they disagree is the only part worth a human's attention.
+// `account` is optional, and a null one is the normal case rather than an
+// error. A token scoped to zones and not to the account reads GET /accounts as
+// 200 with an empty list - not a 403 - so there is no account id to send, and
+// the old code stopped there saying the token needed Account:Read. It does not.
+// POST /zones with no account attaches the zone to the only account the
+// credential belongs to. Measured: 200, zone created, nameservers returned.
 export async function createZone(token, account, domain, jumpStart = true) {
-  const r = await cf(token, '/zones', {
-    method: 'POST',
-    body: JSON.stringify({ name: domain, account: { id: account }, type: 'full', jump_start: jumpStart }),
-  })
+  const body = { name: domain, type: 'full', jump_start: jumpStart }
+  if (account) body.account = { id: account }
+  const r = await cf(token, '/zones', { method: 'POST', body: JSON.stringify(body) })
   if (!r.ok) throw new Error(firstError(r.body))
   return r.body.result
+}
+
+// Whether this credential can actually touch DNS on this zone, asked of the
+// API rather than inferred from the token being "valid".
+//
+// The incident: a token with Zone:Edit and no DNS permission created the zone,
+// reported "valid, 1 zone in scope", and then refused all eight record writes
+// with eight identical lines reading "Authentication error". Nothing in that
+// output named the missing permission. One call up front does.
+export async function dnsReachable(token, zoneId) {
+  const r = await cf(token, `/zones/${zoneId}/dns_records?per_page=1`)
+  return r.ok
 }
 
 // Everything goes in grey-clouded. Today nothing is proxied, so proxying on the

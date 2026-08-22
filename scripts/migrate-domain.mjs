@@ -49,9 +49,9 @@ async function getToken() {
   say('  Opening the token page. The permission boxes are already ticked.')
   say('  Press ' + b('Continue to summary') + ', then ' + b('Create Token') + ', then the copy button.')
   say('')
-  say(dim('  Nothing to paste. While this is waiting it watches the clipboard for a'))
-  say(dim('  40-character Cloudflare token and takes it the moment it appears. It'))
-  say(dim('  ignores anything of another shape and never prints what it saw.'))
+  say(dim('  Nothing to paste. While this is waiting it watches the clipboard and'))
+  say(dim('  hands whatever is copied to Cloudflare to be checked. It says either'))
+  say(dim('  way, and never prints what it saw.'))
   say('')
   await auth.openBrowser(auth.TOKEN_URL)
   say(dim('  if the browser did not open: ' + auth.TOKEN_URL))
@@ -151,12 +151,27 @@ let zone = await z.findZone(T, domain)
 if (zone) {
   say(`  zone already exists (${zone.status})`)
 } else {
+  // A null account is fine. See createZone: a zone-scoped token sees no
+  // accounts and Cloudflare attaches the zone to the only one it belongs to.
   const acct = await z.accountId(T)
-  if (!acct) { say(red('  the token cannot read an account — it needs Account:Read as well')); await bail(1) }
-  zone = await z.createZone(T, acct, domain)
+  zone = await z.createZone(T, acct, domain).catch((e) => { say(red('  ' + e.message)); return null })
+  if (!zone) await bail(1)
   say(`  zone created (${zone.status})`)
   say(dim('  waiting for its own scan, as a second opinion on the record list'))
   await new Promise((r) => setTimeout(r, 20000))
+}
+
+// Before eight writes fail one at a time, ask once whether this credential can
+// write DNS at all. A token can hold Zone:Edit, create the zone, list it, and
+// still be refused every record - and the refusals say only "Authentication
+// error", which sends you looking at the token rather than at its permissions.
+if (!(await z.dnsReachable(T, zone.id))) {
+  say(red('  this credential can see the zone but not its DNS records.'))
+  say(dim('  It is missing Zone → DNS → Edit. The zone is created and stays created;'))
+  say(dim('  add the permission and run this again — it will pick up where it stopped.'))
+  say('')
+  say('  ' + auth.TOKEN_URL)
+  await bail(1)
 }
 
 // --------------------------------------------------- 3. two guessers compared

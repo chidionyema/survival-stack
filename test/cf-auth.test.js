@@ -9,6 +9,7 @@ import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { join } from 'node:path'
+import { readFile } from 'node:fs/promises'
 import * as auth from '../scripts/lib/cf-auth.mjs'
 
 const run = promisify(execFile)
@@ -28,18 +29,39 @@ test('incident: wrangler OAuth cannot create a zone or write DNS, whatever the f
   assert.equal(scopes.includes('dns_records:edit'), false, 'dns_records:edit is now available — drop the API token')
 })
 
-test('the token shape is strict enough to ignore a password on the clipboard', () => {
-  assert.equal(auth.looksLikeToken('a'.repeat(40)), true)
-  assert.equal(auth.looksLikeToken('Ab9_-'.repeat(8)), true)
+test('incident: a real token was ignored because it was not 40 characters', async () => {
+  // The check was /^[A-Za-z0-9_-]{40}$/. Cloudflare started issuing a
+  // `cfut_`-prefixed 53-character token, the watcher saw a live, active
+  // credential, decided it was the wrong shape, and said nothing. Half an hour
+  // of window went by looking like a broken clipboard.
+  //
+  // The rule that came out of it: never assume a vendor's format is static.
+  // The API is the validator. This asserts both halves - the new shape passes,
+  // and no length equality is left anywhere in the source.
+  assert.equal(auth.looksLikeToken('cfut_' + 'x'.repeat(48)), true, 'the cfut_ form is refused again')
+  assert.equal(auth.looksLikeToken('a'.repeat(40)), true, 'the old form stopped working')
+  assert.equal(auth.looksLikeToken('a'.repeat(39)), true, 'a length is being enforced again')
+  assert.equal(auth.looksLikeToken('a'.repeat(41)), true, 'a length is being enforced again')
+  assert.equal(auth.looksLikeToken('q'.repeat(200)), true, 'an upper bound came back')
 
-  for (const junk of [
-    '', ' ', 'hunter2', 'a'.repeat(39), 'a'.repeat(41),
-    'https://example.com/something/quite/long/indeed/x',
-    'correct horse battery staple and then some more!!',
-    'a'.repeat(20) + '@' + 'a'.repeat(19),          // an email-ish thing
-  ]) {
-    assert.equal(auth.looksLikeToken(junk), false, `${JSON.stringify(junk.slice(0, 20))} was taken for a token`)
+  // Comments stripped, or this matches the paragraph above describing the bug.
+  const src = (await readFile(new URL('../scripts/lib/cf-auth.mjs', import.meta.url), 'utf8'))
+    .split('\n').filter((l) => !l.trim().startsWith('//')).join('\n')
+  assert.equal(/length\s*[!=]==?\s*\d/.test(src), false, 'a length equality is back in the validator')
+  assert.equal(/\{40\}/.test(src), false, 'the 40-character regex is back')
+})
+
+test('a candidate that is turned away says which thing went wrong', () => {
+  // Silence was the defect. Every rejection carries the sentence that tells
+  // the user whether to fix the copy or fix the token.
+  for (const junk of ['', ' ', 'hunter2', 'a'.repeat(19)]) {
+    const c = auth.tokenCandidate(junk)
+    assert.equal(c.ok, false, `${JSON.stringify(junk)} was taken for a token`)
+    assert.ok(c.why && c.why.length > 5, 'rejected with no reason given')
   }
+  assert.match(auth.tokenCandidate('hunter2').why, /too short/)
+  assert.match(auth.tokenCandidate('correct horse battery staple and more').why, /spaces|newlines/)
+  assert.match(auth.tokenCandidate('https://example.com/quite/long/indeed/x').why, /URL/)
 })
 
 test("another vendor's key is never sent to Cloudflare to be checked", () => {
@@ -47,9 +69,10 @@ test("another vendor's key is never sent to Cloudflare to be checked", () => {
   // Several vendors issue keys of exactly this shape, so a stray copy would
   // otherwise leak one secret to an unrelated company. These stop at the door.
   for (const prefix of ['sk-', 'sk_', 'pk_', 'ghp_', 'xoxb-', 'AKIA', 'AIza', 'hf_', 'glpat-', 'dop_v1_', 'SG.', 'npm_']) {
-    const key = (prefix + 'x'.repeat(40)).slice(0, 40)
-    assert.equal(key.length, 40)
-    assert.equal(auth.looksLikeToken(key), false, `a ${prefix}… key would have been sent to Cloudflare`)
+    const key = prefix + 'x'.repeat(40)
+    const c = auth.tokenCandidate(key)
+    assert.equal(c.ok, false, `a ${prefix}… key would have been sent to Cloudflare`)
+    assert.match(c.why, /another vendor/, 'refused, but not for the reason that matters')
   }
 })
 

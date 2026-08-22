@@ -89,8 +89,8 @@ const reader = await auth.clipboardReader()
 let token = null
 
 if (reader) {
-  say(dim('  Nothing to paste and nothing to press. This watches the clipboard for a'))
-  say(dim('  40-character Cloudflare token and takes it the moment it appears.'))
+  say(dim('  Nothing to paste and nothing to press. This watches the clipboard and'))
+  say(dim('  hands whatever is copied to Cloudflare to be checked, saying either way.'))
   say('')
   const got = await auth.waitForTokenOnClipboard({
     seconds: Number(process.env.CF_TOKEN_WAIT || 1800),
@@ -130,10 +130,9 @@ if (!token) {
 // The vendor check runs before the token is sent anywhere. Validating means
 // handing it to Cloudflare as a bearer token, and several other companies issue
 // keys of exactly this shape.
-if (!auth.looksLikeToken(token)) {
-  say(red('  that is not a Cloudflare API token.'))
-  say(dim("  40 characters of letters, digits, - and _. Another vendor's key is refused"))
-  say(dim('  here rather than being sent to Cloudflare to be checked.'))
+const candidate = auth.tokenCandidate(token)
+if (!candidate.ok) {
+  say(red('  not sending that to Cloudflare: ' + candidate.why))
   process.exit(1)
 }
 
@@ -142,7 +141,9 @@ if (!auth.looksLikeToken(token)) {
 say(dim('  asking Cloudflare what this credential can do'))
 const can = await auth.capability(token)
 if (!can.valid) {
-  say(red('  Cloudflare rejected it. Copy the whole token and run this again.'))
+  say(red(can.offline
+    ? '  could not reach Cloudflare to check it, so nothing was stored.'
+    : '  Cloudflare rejected it. Copy the whole token and run this again.'))
   process.exit(1)
 }
 if (can.zones === null) say(yel('  it cannot list zones - add Zone: Read, or zone lookups will fail'))
