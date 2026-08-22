@@ -6,6 +6,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 WRANGLER="npx --yes wrangler@latest"
 TMP=$(mktemp); trap 'rm -f "$TMP"' EXIT
+# set -e exits silently, which in a wizard reads as "it finished". Say where.
+trap 'printf "\n\033[1mSetup stopped at line %s: %s\033[0m\nNothing after this point was stored. Fix the above and run it again — it is safe to re-run.\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
 say()  { printf '\n\033[1m%s\033[0m\n' "$*"; }
 ask()  { local p="$1" d="${2:-}" v; read -r -p "$p${d:+ [$d]}: " v; echo "${v:-$d}"; }
@@ -50,7 +52,10 @@ $WRANGLER whoami >/dev/null 2>&1 || $WRANGLER login
 say "2. State stores"
 echo "Creating the KV namespace and the two R2 buckets (skipped if they exist)."
 $WRANGLER kv namespace create STATE >"$TMP" 2>&1 || true
-KV_ID=$(grep -oE '[0-9a-f]{32}' "$TMP" | head -1)
+# No match means grep exits 1, and with pipefail that killed the whole wizard
+# before it reached the fallback three lines down. head closing the pipe early
+# can do the same on a match. Both end in `|| true` for that reason.
+KV_ID=$(grep -oE '[0-9a-f]{32}' "$TMP" | head -1 || true)
 if [ -z "$KV_ID" ]; then
   # Already created by an earlier run. Ask the account, not the founder.
   KV_ID=$($WRANGLER kv namespace list 2>/dev/null | python3 -c 'import json,sys;print(next((n["id"] for n in json.load(sys.stdin) if n["title"].endswith("STATE")),""))' 2>/dev/null || true)
@@ -75,7 +80,7 @@ say "4. Telegram"
 echo "Create a bot with @BotFather, then send it any message from the phone you will use."
 secret TELEGRAM_BOT_TOKEN "Bot token (hidden)"
 CHAT_ID=$(ask "Your Telegram chat id (see @userinfobot)")
-HOOK_SECRET=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)
+HOOK_SECRET=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32 || true)
 printf '%s' "$CHAT_ID"     | $WRANGLER secret put TELEGRAM_CHAT_ID >/dev/null
 printf '%s' "$HOOK_SECRET" | $WRANGLER secret put TELEGRAM_WEBHOOK_SECRET >/dev/null
 echo "  stored TELEGRAM_CHAT_ID and a fresh webhook secret"
