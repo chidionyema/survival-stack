@@ -386,21 +386,34 @@ curl http://localhost/health  # Still works
 
 But it proves the architecture. The code works. The flow works. The TOTP works. The failover logic works. The only thing left is to swap Docker for real APIs.
 
-## Step 7: The "Go Live" Checklist (Spend After Proof)
+## Step 7: The Corrected "Go Live" Checklist (Spend After Proof)
+
+Cloudflare Edge replaces the **vault box only**. It does NOT replace the primary and
+the standby. The engine cannot run on Cloudflare Edge: Workers are JavaScript and
+WebAssembly only, so the two engine boxes are still real VMs.
+
+| Layer | Runs on | VM needed? |
+|---|---|---|
+| Control plane (Hermes, TOTP, provisioning) | Cloudflare Worker | No |
+| Lighthouse (status console) | Cloudflare Pages | No |
+| Health checks and auto-failover | Cloudflare DNS | No |
+| **Primary engine** | **Hetzner CX21** | **Yes** |
+| **Standby engine** | **DigitalOcean $6** | **Yes** |
 
 Once the dry run passes all 4 tests:
 
-- [ ] Buy Hetzner CX21 (€5.35) — primary
-- [ ] Buy DigitalOcean $6 droplet — standby
-- [ ] Buy Cloudflare domain or migrate — DNS
-- [ ] Set up R2 bucket — $2/mo
-- [ ] Deploy real Cloudflare Worker — `wrangler deploy`
-- [ ] Compile real surge binary — `GOOS=linux go build`
-- [ ] Swap mock-surge for real surge — same CLI, real APIs
-- [ ] Swap placeholder engine for your real engine — same Dockerfile
-- [ ] Run real Monday Test — from your phone, on a park bench
+- [ ] Buy Hetzner CX21 (EUR 5.35/mo) - primary engine (VM required)
+- [ ] Buy DigitalOcean $6 droplet - standby engine (VM required)
+- [ ] Deploy the Worker - `wrangler deploy` (free)
+- [ ] Deploy Lighthouse - `wrangler pages deploy` (free)
+- [ ] Migrate the domain to Cloudflare DNS (free)
+- [ ] Create the R2 buckets - ~$2/mo
+- [ ] ~~Buy a Hetzner CX11 vault box~~ - eliminated, saves EUR 3.79/mo
+- [ ] Swap the mock provider driver for the real one - same interface, real APIs
+- [ ] Swap the placeholder engine for the real engine - same Dockerfile
+- [ ] Run the real Monday Test - from your phone, on a park bench
 
-**Total first-month cost after proof: ~£15.**
+**Total after proof: ~GBP 12/mo.** The vault box is the only line the edge removed.
 
 ## What to Hand Your Agent Today
 

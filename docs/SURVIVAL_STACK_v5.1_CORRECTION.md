@@ -24,6 +24,24 @@ Saved: €3.79/mo, 100% of vault patching, and the "what if my vault dies at 3am
 
 ---
 
+## 0b. WHAT THE EDGE DOES NOT REPLACE
+
+Cloudflare Edge replaces the vault box. It does NOT replace the primary and the standby.
+
+The engine cannot run on Cloudflare Edge. Workers are JavaScript and WebAssembly only.
+There is no Python, no Postgres, no long-lived process and no filesystem, so the two
+engine boxes stay real VMs.
+
+| Layer | Runs on | VM needed? |
+|---|---|---|
+| Control plane (Hermes, TOTP, provisioning) | Cloudflare Worker | No |
+| Lighthouse (status console) | Cloudflare Pages | No |
+| Health checks and auto-failover | Cloudflare DNS | No |
+| **Primary engine** | **Hetzner CX21** | **Yes** |
+| **Standby engine** | **DigitalOcean $6** | **Yes** |
+
+Eliminated by v5.1: the Hetzner CX11 vault box, EUR 3.79/mo. Nothing else.
+
 ## 1. ARCHITECTURE (v5.1)
 
 ```
