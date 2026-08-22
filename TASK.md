@@ -25,7 +25,7 @@ two real VMs. See `docs/SURVIVAL_STACK_v5.1_CORRECTION.md` section 0b.
 The dry run must be green on the day, not last week.
 
 ```
-npm test                         # 39 passing, 0 failing
+npm test                         # 48 passing, 0 failing
 scripts/dry-run.sh               # up, then A to H — 41 assertions
 scripts/dry-run.sh down
 ```
@@ -45,7 +45,8 @@ If any of those is red, next week does not start. Fix it first.
 - [ ] **R2 buckets:** `survival-data` and `survival-audit`.
       Proof: `npx wrangler r2 bucket list`
 - [ ] **An SSH key registered at both providers**, same name at both, because
-      cloud-init names it once. Default in `scripts/setup.sh` is `survival`.
+      cloud-init names it once. The setup console reads the names
+      out of your provider accounts and offers them.
 - [ ] **Do not buy a vault box.** v5.0 had one. It is deleted. If you find
       yourself renting a small VPS to "hold the tooling", stop and re-read
       section 0 of the correction.
@@ -54,17 +55,17 @@ Say the running total out loud at the end of Monday. It should be about GBP 12.
 
 ## Tuesday — deploy the parts that cost nothing
 
-- [ ] **Secrets into Cloudflare, none onto disk.** `npm run secrets` in a real
-      terminal. It refuses a non-interactive shell on purpose. Nothing it reads
-      is echoed and nothing is written to this machine.
-      Proof: `npx wrangler secret list` names them and prints no values.
-- [ ] **The Worker.** `npm run deploy`.
-      Proof: `curl -s https://<worker>.workers.dev/health` says `survival-control-plane`.
+- [ ] **Everything, from one page.** Double-click `Set up Survival Stack.command`,
+      or run `npm run secrets`. Every value is checked against its own service as
+      you paste it. The button at the bottom creates the stores, stores the
+      secrets, deploys twice, sets the Telegram webhook and messages you.
+      Proof: the message arrives on the phone. Then `npx wrangler secret list`
+      names them and prints no values.
 - [ ] **Lighthouse.** `npx wrangler pages deploy lighthouse`.
       Proof: open the URL on the phone. The status tiles fill in. If they do not,
       `LIGHTHOUSE_ORIGIN` in `wrangler.jsonc` is still `*` or still wrong.
-- [ ] **Telegram webhook.** The last step of `scripts/setup.sh` does it.
-      Proof: send `/status` from the phone and read the reply.
+- [ ] **Telegram webhook.** The setup console does it, and proves it by sending
+      you a message. Proof: send `/status` from the phone and read the reply.
 - [ ] **Both engine boxes, from the phone, not from a laptop.**
       `/cold-start hetzner primary <code>` then `/cold-start digitalocean standby <code>`.
       Proof: the bot edits its own message to "Cold start complete" with an IP

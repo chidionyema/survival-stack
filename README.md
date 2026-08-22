@@ -24,22 +24,41 @@ must do, and the five it does not have to.
 | `src/degraded.js` | Mode 4: origin dead, edge sells, orders queue in R2 |
 | `src/cloudinit.js` | The document that makes a bare VM into a running box |
 | `lighthouse/index.html` | The static page. Loads when every server is ash |
-| `scripts/setup.sh` | One pass, one time. Stores secrets in Cloudflare, prints none |
+| `scripts/console/` | The setup console. A page on loopback, not eighteen terminal prompts |
+| `scripts/setup.sh` | Four lines that open it |
 | `scripts/exit-drill.sh` | Proves you can leave. Run it on a schedule |
 
 Zero runtime dependencies. `wrangler` is a dev tool, not a dependency of the code.
 
 ## Set it up
 
+Double-click **Set up Survival Stack.command** in Finder. Or, from anywhere:
+
 ```bash
-npm install
-npm test          # 39 tests, no network
-npm run secrets   # the wizard: logins, stores, deploys, points Telegram at it
+npm test          # 48 tests, no network
+npm run secrets   # opens the setup console in your browser
 ```
 
-The wizard asks for the Cloudflare login, creates the KV namespace and the two R2
-buckets, takes each secret with the echo off, deploys, and registers the Telegram
-webhook with a freshly generated secret token. It never prints a secret back.
+A page opens on `127.0.0.1`. Fill the cards in any order. Each value is checked
+against the service that owns it as you paste it, so a wrong token turns red on
+the page instead of at 2am: Cloudflare verifies the API token and lists your
+domains, Telegram names the bot back, the providers report their SSH keys, Stripe
+says whether the key is live or test, and the R2 pair is signed and sent for real.
+
+Three things you no longer supply. The zone id and the apex A record id are looked
+up from your domain, and the record is created if it does not exist. Your Telegram
+chat id arrives by messaging the bot. The TOTP secret is generated in the page,
+shown once as a QR code, and only accepted once you have typed back a working code
+— so enrolment is proved before it is stored, not assumed.
+
+One button then creates the KV namespace and both R2 buckets, fills in
+`wrangler.jsonc`, stores every secret, deploys twice (the second one carries the
+`CONTROL_URL` that the first deploy revealed), sets the Telegram webhook, and
+sends you a message. The message arriving is the proof.
+
+Nothing reaches disk. Values live in that process's memory and go out over stdin
+to `wrangler secret put`. The page is reachable only from loopback, only with the
+token in the URL it printed, and only from its own origin.
 
 Then publish `lighthouse/` to Cloudflare Pages and open it once with
 `?api=https://<your-worker>.workers.dev` — it remembers the URL after that.
@@ -103,12 +122,15 @@ example tests of orchestration.
 - **Incident** — a bad base32 secret refuses rather than authenticating; a
   degraded-mode order survives the dead-origin attempt that already read the
   body; a deploy ships the image it named instead of the configured one; the
-  box is told which database it is running instead of guessing
+  box is told which database it is running instead of guessing; `wrangler
+  whoami` exits 0 while saying you are not logged in, so the console reads the
+  words; the QR the page draws scans back to the URI it was drawn from; a
+  credential that failed its check does not count as filled in
 
 ```
 $ npm test
-ℹ tests 39
-ℹ pass 39
+ℹ tests 48
+ℹ pass 48
 ℹ fail 0
 ```
 

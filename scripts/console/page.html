@@ -1,0 +1,291 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Survival Stack — setup</title>
+<style>
+  :root {
+    --bg:#0e1116; --card:#161b22; --line:#252c37; --ink:#e6edf3; --dim:#8b949e;
+    --ok:#3fb950; --bad:#f85149; --wait:#d29922; --accent:#4493f8;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#f6f8fa; --card:#fff; --line:#d0d7de; --ink:#1f2328; --dim:#59636e;
+            --ok:#1a7f37; --bad:#cf222e; --wait:#9a6700; --accent:#0969da; }
+  }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.55 ui-sans-serif,-apple-system,"SF Pro Text",Segoe UI,sans-serif; padding-bottom:120px }
+  main { max-width:660px; margin:0 auto; padding:40px 20px }
+  h1 { font-size:22px; margin:0 0 4px }
+  .lede { color:var(--dim); margin:0 0 28px }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px 20px; margin:0 0 14px }
+  .card.off { opacity:.45 }
+  .head { display:flex; align-items:center; gap:10px; margin-bottom:4px }
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--line); flex:none }
+  .dot.ok { background:var(--ok) } .dot.bad { background:var(--bad) }
+  .dot.wait { background:var(--wait); animation:pulse 1s infinite }
+  @keyframes pulse { 50% { opacity:.3 } }
+  .t { font-weight:600 } .opt { color:var(--dim); font-weight:400; font-size:13px }
+  .why { color:var(--dim); font-size:13.5px; margin:0 0 12px }
+  .why a { color:var(--accent) }
+  input, select { width:100%; padding:9px 11px; border-radius:8px; border:1px solid var(--line);
+    background:var(--bg); color:var(--ink); font:14px ui-monospace,SFMono-Regular,Menlo,monospace }
+  input:focus, select:focus { outline:2px solid var(--accent); outline-offset:-1px }
+  .row { display:flex; gap:8px } .row > * { flex:1 } .row > button { flex:none }
+  button { padding:9px 16px; border-radius:8px; border:1px solid var(--line); background:var(--card);
+    color:var(--ink); font:inherit; font-weight:500; cursor:pointer }
+  button:hover:not(:disabled) { border-color:var(--accent) }
+  button:disabled { opacity:.4; cursor:default }
+  button.go { background:var(--accent); border-color:var(--accent); color:#fff }
+  .note { font-size:13px; color:var(--dim) }
+  .note:not(:empty) { margin-top:8px }
+  .note.ok { color:var(--ok) } .note.bad { color:var(--bad) }
+  .qr { display:flex; gap:16px; align-items:flex-start; margin:6px 0 12px }
+  .qr img { width:150px; height:150px; border-radius:8px; background:#fff; padding:6px }
+  .qr p { margin:0 0 8px; font-size:13.5px; color:var(--dim) }
+  code { background:var(--bg); border:1px solid var(--line); padding:1px 5px; border-radius:5px;
+    font:12.5px ui-monospace,Menlo,monospace; word-break:break-all }
+  .bar { position:fixed; left:0; right:0; bottom:0; background:var(--card); border-top:1px solid var(--line);
+    padding:14px 20px }
+  .bar div { max-width:660px; margin:0 auto; display:flex; align-items:center; gap:14px }
+  .bar span { color:var(--dim); font-size:13.5px; flex:1 }
+  #log { max-width:660px; margin:0 auto; font:13px ui-monospace,Menlo,monospace; white-space:pre-wrap }
+  #log b { color:var(--ok); font-weight:400 } #log i { color:var(--bad); font-style:normal }
+  .hide { display:none }
+</style>
+
+<main>
+  <h1>Survival Stack</h1>
+  <p class="lede">Fill these in any order. Each one is checked against the service that owns it,
+    so a wrong paste turns red here instead of at 2am. Nothing is stored until you press Set it all up.</p>
+
+  <section class="card" id="c-cf">
+    <div class="head"><i class="dot" id="d-cf"></i><span class="t">Cloudflare account</span></div>
+    <p class="why">Where the control plane runs. This is the only login.</p>
+    <div class="row">
+      <button id="b-login">Log in to Cloudflare</button>
+      <a id="a-login" class="hide" target="_blank"><button>Open the approval page</button></a>
+    </div>
+    <div class="note" id="n-cf"></div>
+  </section>
+
+  <section class="card" id="c-dns">
+    <div class="head"><i class="dot" id="d-dns"></i><span class="t">Your domain</span></div>
+    <p class="why">Paste an API token with <b>Zone:Read</b> and <b>Zone:DNS:Edit</b> —
+      <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank">make one here</a>.
+      Your domains appear below. The apex record is found or created for you.</p>
+    <input id="i-CF_API_TOKEN" type="password" placeholder="Cloudflare API token" autocomplete="off">
+    <div class="note" id="n-CF_API_TOKEN"></div>
+    <select id="s-zone" class="hide"></select>
+    <div class="note" id="n-DOMAIN"></div>
+  </section>
+
+  <section class="card" id="c-totp">
+    <div class="head"><i class="dot" id="d-totp"></i><span class="t">Your phone</span></div>
+    <p class="why">Every action that spends money needs a code from this. Scan it with
+      Aegis, 1Password or Google Authenticator, then type what it shows.</p>
+    <div class="qr">
+      <img id="qr" alt="TOTP QR code">
+      <div>
+        <p>The secret behind this code is generated here and never written to disk.
+          Scan it now — this is the only time it is shown.</p>
+        <button id="b-manual">Can't scan? Show the text</button>
+        <p id="manual" class="hide"></p>
+      </div>
+    </div>
+    <div class="row">
+      <input id="i-code" placeholder="the 6 digits on your phone" inputmode="numeric" maxlength="6" autocomplete="off">
+      <button id="b-code">Check</button>
+    </div>
+    <div class="note" id="n-TOTP_SECRET"></div>
+  </section>
+
+  <section class="card" id="c-tg">
+    <div class="head"><i class="dot" id="d-tg"></i><span class="t">Telegram</span></div>
+    <p class="why">How you talk to the stack. Make a bot with
+      <a href="https://t.me/BotFather" target="_blank">@BotFather</a> and paste its token.</p>
+    <input id="i-TELEGRAM_BOT_TOKEN" type="password" placeholder="bot token from BotFather" autocomplete="off">
+    <div class="note" id="n-TELEGRAM_BOT_TOKEN"></div>
+    <div class="row" id="chatrow" style="margin-top:10px">
+      <button id="b-chat">Now message your bot, then press this</button>
+    </div>
+    <div class="note" id="n-TELEGRAM_CHAT_ID"></div>
+  </section>
+
+  <section class="card" id="c-r2">
+    <div class="head"><i class="dot" id="d-r2"></i><span class="t">R2 keys</span>
+      <span class="opt">— for the backups</span></div>
+    <p class="why">The boxes use these to push the database to object storage.
+      <a href="https://dash.cloudflare.com/?to=/:account/r2/api-tokens" target="_blank">Make a key pair here.</a>
+      Wrong keys mean backups that silently never happen, so both halves are signed and tried.</p>
+    <input id="i-R2_ACCESS_KEY" type="password" placeholder="access key id" autocomplete="off" style="margin-bottom:8px">
+    <input id="i-R2_SECRET_KEY" type="password" placeholder="secret access key" autocomplete="off">
+    <div class="note" id="n-R2_SECRET_KEY"></div>
+  </section>
+
+  <section class="card" id="c-prov">
+    <div class="head"><i class="dot" id="d-prov"></i><span class="t">Providers</span>
+      <span class="opt">— at least one, the rest whenever</span></div>
+    <p class="why">Where a box gets built. Any you skip are simply not offered.</p>
+    <input id="i-HETZNER_TOKEN" type="password" placeholder="Hetzner API token" autocomplete="off">
+    <div class="note" id="n-HETZNER_TOKEN"></div>
+    <input id="i-DIGITALOCEAN_TOKEN" type="password" placeholder="DigitalOcean token" autocomplete="off" style="margin-top:10px">
+    <div class="note" id="n-DIGITALOCEAN_TOKEN"></div>
+    <input id="i-VULTR_TOKEN" type="password" placeholder="Vultr API key" autocomplete="off" style="margin-top:10px">
+    <div class="note" id="n-VULTR_TOKEN"></div>
+    <select id="s-ssh" style="margin-top:12px"><option value="survival">SSH key: survival</option></select>
+    <div class="note">The key name your providers know. Filled from the tokens above.</div>
+  </section>
+
+  <section class="card" id="c-stripe">
+    <div class="head"><i class="dot" id="d-stripe"></i><span class="t">Stripe</span>
+      <span class="opt">— optional, needed to take money</span></div>
+    <p class="why">The live secret key. Checked against Stripe, which will say whether it is live or test.</p>
+    <input id="i-STRIPE_SECRET_KEY" type="password" placeholder="sk_live_…" autocomplete="off">
+    <div class="note" id="n-STRIPE_SECRET_KEY"></div>
+  </section>
+</main>
+
+<div class="bar"><div id="barinner">
+  <span id="left">Loading…</span>
+  <button class="go" id="b-apply" disabled>Set it all up</button>
+</div></div>
+
+<script>
+const T = '__TOKEN__'
+const $ = (id) => document.getElementById(id)
+const api = async (path, body) => {
+  const r = await fetch(path + '?t=' + T, {
+    method: body === undefined ? 'GET' : 'POST',
+    headers: { 'content-type': 'application/json', 'x-setup-token': T },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+  return r.json()
+}
+const setNote = (id, r) => {
+  const n = $('n-' + id); if (!n) return
+  n.textContent = r.note || ''
+  n.className = 'note ' + (r.ok ? 'ok' : r.note ? 'bad' : '')
+}
+const dot = (id, cls) => { $('d-' + id).className = 'dot ' + cls }
+
+let S = {}
+function paint() {
+  const c = S.checks || {}
+  for (const k in c) setNote(k, c[k])
+  dot('cf', S.account ? 'ok' : S.login?.running ? 'wait' : '')
+  $('n-cf').textContent = S.account
+    ? `logged in as ${S.account.email || S.account.name || 'your account'}`
+    : S.login?.running ? 'waiting for you to approve it in the browser…' : (S.login?.error || '')
+  $('n-cf').className = 'note ' + (S.account ? 'ok' : S.login?.error ? 'bad' : '')
+  $('b-login').textContent = S.account ? 'Logged in' : 'Log in to Cloudflare'
+  $('b-login').disabled = !!S.account || !!S.login?.running
+  $('a-login').className = S.login?.running && S.login.url ? '' : 'hide'
+  if (S.login?.url) $('a-login').href = S.login.url
+
+  dot('dns', c.DOMAIN?.ok ? 'ok' : c.CF_API_TOKEN?.ok ? 'wait' : c.CF_API_TOKEN ? 'bad' : '')
+  const sel = $('s-zone')
+  if (S.zones?.length && sel.options.length !== S.zones.length + 1) {
+    sel.innerHTML = '<option value="">— pick your domain —</option>' +
+      S.zones.map((z) => `<option value="${z.name}">${z.name}</option>`).join('')
+    sel.className = ''
+  }
+  if (S.zone) sel.value = S.zone.name
+
+  dot('totp', S.totp?.verified ? 'ok' : c.TOTP_SECRET ? 'bad' : '')
+  dot('tg', c.TELEGRAM_CHAT_ID?.ok ? 'ok' : c.TELEGRAM_BOT_TOKEN?.ok ? 'wait' : c.TELEGRAM_BOT_TOKEN ? 'bad' : '')
+  $('b-chat').disabled = !c.TELEGRAM_BOT_TOKEN?.ok
+  dot('r2', c.R2_SECRET_KEY?.ok ? 'ok' : c.R2_SECRET_KEY || c.R2_ACCESS_KEY ? 'bad' : '')
+  const PROV = ['HETZNER_TOKEN', 'DIGITALOCEAN_TOKEN', 'VULTR_TOKEN']
+  dot('prov', PROV.some((k) => c[k]?.ok) ? 'ok' : PROV.some((k) => c[k]) ? 'bad' : '')
+  dot('stripe', c.STRIPE_SECRET_KEY?.ok ? 'ok' : c.STRIPE_SECRET_KEY ? 'bad' : '')
+
+  const ssh = $('s-ssh')
+  if (S.sshKeys?.length && ssh.options.length !== S.sshKeys.length) {
+    ssh.innerHTML = S.sshKeys.map((k) => `<option value="${k}">SSH key: ${k}</option>`).join('')
+    api('/api/var', { name: 'SSH_KEY_NAME', value: ssh.value })
+  }
+
+  const need = []
+  if (!S.account) need.push('the Cloudflare login')
+  if (!c.DOMAIN?.ok) need.push('your domain')
+  if (!S.totp?.verified) need.push('a code from your phone')
+  if (!c.TELEGRAM_CHAT_ID?.ok) need.push('Telegram')
+  $('left').textContent = need.length ? 'Still needed: ' + need.join(', ') + '.'
+    : 'Everything required is green. This creates the stores, stores the secrets and deploys.'
+  $('b-apply').disabled = need.length > 0
+}
+const load = async () => { S = await api('/api/state'); paint() }
+
+// A pasted token is checked as soon as you stop typing. No submit button, and
+// no waiting until the end to find out.
+let timers = {}
+for (const id of ['CF_API_TOKEN', 'TELEGRAM_BOT_TOKEN', 'HETZNER_TOKEN', 'DIGITALOCEAN_TOKEN',
+                  'VULTR_TOKEN', 'STRIPE_SECRET_KEY', 'R2_ACCESS_KEY', 'R2_SECRET_KEY']) {
+  const el = $('i-' + id)
+  el.addEventListener('input', () => {
+    clearTimeout(timers[id])
+    const v = el.value.trim()
+    if (!v) return
+    setNote(id, { note: 'checking…' })
+    timers[id] = setTimeout(async () => {
+      const r = await api('/api/set', { field: id, value: v })
+      S = r.state; setNote(id, r)
+      if (id.startsWith('R2_')) setNote('R2_SECRET_KEY', r)
+      paint()
+    }, 500)
+  })
+}
+
+$('b-login').onclick = async () => {
+  S = await api('/api/cf/login', {}); paint()
+  const poll = setInterval(async () => {
+    S = await api('/api/cf/whoami', {}); paint()
+    if (S.account || !S.login.running) clearInterval(poll)
+  }, 2000)
+}
+$('s-zone').onchange = async (e) => {
+  if (!e.target.value) return
+  setNote('DOMAIN', { note: 'looking up the apex record…' })
+  const r = await api('/api/cf/zone', { zone: e.target.value })
+  S = r.state; setNote('DOMAIN', r); paint()
+}
+$('s-ssh').onchange = (e) => api('/api/var', { name: 'SSH_KEY_NAME', value: e.target.value })
+$('b-manual').onclick = async () => {
+  const r = await api('/api/totp/manual')
+  $('manual').innerHTML = 'Add it by hand as a TOTP entry: <code>' + r.secret + '</code>'
+  $('manual').className = ''
+  $('b-manual').className = 'hide'
+}
+$('b-code').onclick = async () => {
+  setNote('TOTP_SECRET', { note: 'checking…' })
+  const r = await api('/api/totp/verify', { code: $('i-code').value.trim() })
+  S = r.state; setNote('TOTP_SECRET', S.checks.TOTP_SECRET); paint()
+}
+$('i-code').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('b-code').click() })
+$('b-chat').onclick = async () => {
+  setNote('TELEGRAM_CHAT_ID', { note: 'listening…' })
+  const r = await api('/api/telegram/chat', {})
+  S = r.state; setNote('TELEGRAM_CHAT_ID', r); paint()
+}
+
+$('b-apply').onclick = () => {
+  $('barinner').innerHTML = '<span id="left">Working…</span>'
+  document.querySelector('main').innerHTML = '<h1>Setting it up</h1><div id="log"></div>'
+  const log = $('log')
+  const es = new EventSource('/api/apply?t=' + T)
+  es.onmessage = (e) => {
+    const m = JSON.parse(e.data)
+    const tag = m.kind === 'ok' ? 'b' : m.kind === 'fail' ? 'i' : 'span'
+    const mark = m.kind === 'ok' ? '  ✓ ' : m.kind === 'fail' ? '  ✗ ' : '→ '
+    log.insertAdjacentHTML('beforeend', `<${tag}>${mark}${m.line}</${tag}>\n`)
+    window.scrollTo(0, document.body.scrollHeight)
+    if (m.kind === 'done' || m.kind === 'fail') {
+      es.close()
+      $('left').textContent = m.kind === 'done' ? 'Finished.' : 'Stopped. Nothing after that point ran.'
+    }
+  }
+}
+
+$('qr').src = '/api/totp/qr.png?t=' + T
+load()
+setInterval(() => { if (!S.applied) load() }, 5000)
+</script>
