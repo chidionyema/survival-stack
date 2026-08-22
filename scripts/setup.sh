@@ -26,9 +26,14 @@ Open Terminal.app and run:
 
     cd ~/dev/code/survival-stack && npm run secrets
 
-If you would rather not use a browser login, create a Cloudflare API token
+Running it from inside an agent session hits this same message, because that
+shell has no terminal either. Terminal.app, or iTerm, or the built-in one in
+your editor. Any of them will do.
+
+A Cloudflare API token skips the browser login, not this message. You still
+need a terminal for the prompts. If you want to skip the browser, make a token
 with Workers Scripts:Edit, Workers KV:Edit, Workers R2:Edit and Zone:DNS:Edit,
-then run:
+then in that terminal:
 
     export CLOUDFLARE_API_TOKEN=...
     npm run secrets
