@@ -110,6 +110,52 @@ export function looksLikeToken(s) {
   return tokenCandidate(s).ok
 }
 
+// Cloudflare's confirmation page has two copy buttons side by side: the token
+// value, and a curl command that tests it. The founder pressed the second one.
+// The value was on the clipboard the whole time, wrapped in
+// `-H "Authorization: Bearer <token>"`, and the candidate check correctly threw
+// the whole string away as text without ever looking inside it.
+//
+// So look inside it. Text that is not a token but contains exactly one bearer
+// token yields that token. Two different ones yields nothing - guessing which
+// credential a person meant is worse than asking.
+// The permission rows have to be added by hand.
+//
+// TOKEN_URL carries permissionGroupKeys and the dashboard ignores it. The page
+// opens on a blank custom token with nothing ticked, so "three clicks" was
+// wrong and cost a run: the token came back valid, with zone edit and no DNS
+// edit, and the migration stopped at the first record. Print the rows instead
+// of implying the page will fill them in.
+export function tokenSteps(domain) {
+  return [
+    'Create Custom Token -> Get started',
+    '',
+    '  Permissions, two rows - the second one is the one that gets missed:',
+    '    Zone  ·  Zone  ·  Edit',
+    '    Zone  ·  DNS   ·  Edit',
+    '',
+    '  Zone Resources:',
+    `    Include  ·  Specific zone  ·  ${domain || 'your domain'}`,
+    '',
+    'Continue to summary -> Create Token -> the copy button under the token.',
+    'Not the curl example beside it, though that works too now.',
+  ]
+}
+
+export function extractToken(s) {
+  const raw = String(s || '')
+  if (tokenCandidate(raw).ok) return { value: raw.trim(), from: 'the clipboard' }
+
+  // The floor comes from MIN_TOKEN_LENGTH so there is one number, not two, and
+  // no comparison on the value's own length lives here - that is the mistake
+  // the cfut_ incident was about.
+  const bearer = new RegExp(`[Bb]earer\\s+["']?([A-Za-z0-9_.~+/=-]{${MIN_TOKEN_LENGTH},})["']?`, 'g')
+  const [only, ...alsoOthers] = [...new Set([...raw.matchAll(bearer)].map((m) => m[1]))]
+  if (!only || alsoOthers.length) return { value: null }
+  if (!tokenCandidate(only).ok) return { value: null }
+  return { value: only, from: 'the curl command on the clipboard' }
+}
+
 // The one-click token page. The permission boxes arrive already ticked.
 export const TOKEN_URL =
   'https://dash.cloudflare.com/profile/api-tokens' +
@@ -284,12 +330,12 @@ export async function waitForTokenOnClipboard({ seconds = 300, onTick = () => {}
       // the shape test without a word, which is how a real token sat on the
       // clipboard being ignored. Cloudflare is the validator; this only says
       // why something never reached it.
-      const c = tokenCandidate(now)
-      if (!c.ok) {
-        onTick(`something was copied and it was not sent to Cloudflare: ${c.why}`)
+      const ex = extractToken(now)
+      if (!ex.value) {
+        onTick(`something was copied and it was not sent to Cloudflare: ${tokenCandidate(now).why}`)
       } else {
-        const v = validate ? await validate(now) : { ok: true }
-        if (v.ok) return { token: now, note: v.note }
+        const v = validate ? await validate(ex.value) : { ok: true }
+        if (v.ok) return { token: ex.value, note: v.note, from: ex.from }
         onTick(`something was copied, but Cloudflare rejected it - ${v.note}`)
       }
     }

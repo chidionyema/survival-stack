@@ -78,7 +78,7 @@ if (checkOnly) {
 
 const url = full ? auth.TOKEN_URL_FULL : auth.TOKEN_URL
 say('')
-say(b('  1.') + ' Continue to summary   ' + b('2.') + ' Create Token   ' + b('3.') + ' the copy button')
+for (const line of auth.tokenSteps(process.env.CF_DOMAIN)) say(line ? '  ' + line : '')
 say('')
 if (full) {
   say(dim('  --full: the page also asks for API Tokens: Edit. That permission can'))
@@ -136,11 +136,13 @@ if (!token) {
 // The vendor check runs before the token is sent anywhere. Validating means
 // handing it to Cloudflare as a bearer token, and several other companies issue
 // keys of exactly this shape.
-const candidate = auth.tokenCandidate(token)
-if (!candidate.ok) {
-  say(red('  not sending that to Cloudflare: ' + candidate.why))
+const extracted = auth.extractToken(token)
+if (!extracted.value) {
+  say(red('  not sending that to Cloudflare: ' + auth.tokenCandidate(token).why))
   process.exit(1)
 }
+if (extracted.from !== 'the clipboard') say(dim('  took the token out of ' + extracted.from))
+token = extracted.value
 
 // ------------------------------------------------------------- what it can do
 

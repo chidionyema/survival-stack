@@ -70,8 +70,7 @@ async function getToken() {
   say('')
   say(b('One-time Cloudflare authorisation'))
   say('')
-  say('  Opening the token page. Press ' + b('Continue to summary') + ', then '
-    + b('Create Token') + ', then the copy button.')
+  for (const line of auth.tokenSteps(domain)) say(line ? '  ' + line : '')
   say('')
   say(dim('  Nothing to paste. This watches the clipboard and hands whatever is'))
   say(dim('  copied to Cloudflare to be checked. It says either way, and never'))
@@ -95,6 +94,7 @@ async function getToken() {
     process.exit(1)
   }
   await auth.keychainSet(got.token)
+  if (got.from && got.from !== 'the clipboard') say(dim('  took the token out of ' + got.from))
   say(grn('  got it — ' + got.note + ', saved to your login keychain'))
   return got.token
 }

@@ -239,3 +239,45 @@ test('revoking uses the root credential, not the token being deleted', async () 
   assert.equal(sawUrl, 'https://api.cloudflare.com/client/v4/user/tokens/tok-1')
   assert.equal(sawAuth, 'Bearer ' + 'r'.repeat(40), 'the ephemeral token cannot delete itself')
 })
+
+// ------------------------------------------- the two copy buttons on that page
+
+test('incident: the curl example was copied instead of the token, and thrown away', () => {
+  // Cloudflare's confirmation page puts a copy button on the token and another
+  // on a curl command that tests it. The founder pressed the second. The value
+  // was on the clipboard for the whole window, inside an Authorization header,
+  // and the watcher rejected the string as "text" without looking in it.
+  const tok = 'Zq7' + 'x'.repeat(37)
+  const curl = 'curl "https://api.cloudflare.com/client/v4/user/tokens/verify" \\\n'
+    + `     -H "Authorization: Bearer ${tok}"`
+  assert.equal(auth.tokenCandidate(curl).ok, false, 'the whole curl string is not a token')
+  assert.equal(auth.extractToken(curl).value, tok, 'the token inside the curl example was missed again')
+
+  // A bare token still comes back untouched, and says so.
+  assert.equal(auth.extractToken(tok).value, tok)
+  assert.equal(auth.extractToken(tok).from, 'the clipboard')
+})
+
+test('two different bearer tokens in one paste yields neither', () => {
+  // Guessing which credential a person meant is worse than asking for it again.
+  const two = `Bearer ${'a'.repeat(40)} ... Bearer ${'b'.repeat(40)}`
+  assert.equal(auth.extractToken(two).value, null)
+  // The same token twice is not ambiguous.
+  const same = `Bearer ${'a'.repeat(40)} ... Bearer ${'a'.repeat(40)}`
+  assert.equal(auth.extractToken(same).value, 'a'.repeat(40))
+})
+
+test("another vendor's key inside prose is still not sent to Cloudflare", () => {
+  assert.equal(auth.extractToken(`Authorization: Bearer sk-${'x'.repeat(40)}`).value, null)
+})
+
+test('incident: the token page was described as pre-ticked, and it is not', () => {
+  // permissionGroupKeys is in TOKEN_URL and the dashboard ignores it. A run was
+  // lost to a token created with Zone:Edit and no DNS:Edit, because the flow
+  // said "three clicks" and never named the rows. Both rows are named now.
+  const steps = auth.tokenSteps('example.com').join('\n')
+  assert.match(steps, /Zone\s+·\s+Zone\s+·\s+Edit/, 'the Zone row is not named')
+  assert.match(steps, /Zone\s+·\s+DNS\s+·\s+Edit/, 'the DNS row is not named - this is the one that was missed')
+  assert.match(steps, /example\.com/, 'the zone resource does not name the domain')
+  assert.equal(/three clicks/i.test(steps), false, 'the pre-ticked claim is back')
+})
