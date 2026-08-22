@@ -27,7 +27,8 @@ must do, and the five it does not have to.
 | `scripts/console/` | The setup console. A page on loopback, not eighteen terminal prompts |
 | `scripts/setup.sh` | Four lines that open it |
 | `scripts/console/zone.mjs` | Moves a domain onto Cloudflare and refuses to say ready unless both nameserver sets answer identically |
-| `scripts/migrate-domain.mjs` | The same thing as one command |
+| `scripts/migrate.sh` | Move a domain onto Cloudflare. One command, nothing typed |
+| `scripts/lib/cf-auth.mjs` | Finds a Cloudflare credential, or catches one off the clipboard into the keychain |
 | `scripts/exit-drill.sh` | Proves you can leave. Run it on a schedule |
 
 Zero runtime dependencies. `wrangler` is a dev tool, not a dependency of the code.
@@ -37,7 +38,7 @@ Zero runtime dependencies. `wrangler` is a dev tool, not a dependency of the cod
 Double-click **Set up Survival Stack.command** in Finder. Or, from anywhere:
 
 ```bash
-npm test          # 55 tests, no network
+npm test          # 64 tests, no network
 npm run secrets   # opens the setup console in your browser
 ```
 
@@ -127,12 +128,14 @@ example tests of orchestration.
   box is told which database it is running instead of guessing; `wrangler
   whoami` exits 0 while saying you are not logged in, so the console reads the
   words; the QR the page draws scans back to the URI it was drawn from; a
-  credential that failed its check does not count as filled in
+  credential that failed its check does not count as filled in; a domain
+  migration that dropped a mail record reported as ready; `wrangler login`
+  was believed to cover zone creation, so the scope list is now asserted
 
 ```
 $ npm test
-ℹ tests 48
-ℹ pass 48
+ℹ tests 64
+ℹ pass 64
 ℹ fail 0
 ```
 

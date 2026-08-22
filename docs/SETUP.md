@@ -56,16 +56,23 @@ You can fetch them as you go, but having them open in tabs makes it one sitting.
 Cloudflare yet, do that first. It is free and it is the one thing setup cannot
 do for you.
 
-**A Cloudflare API token.** One click:
-[this link opens the token form with the right boxes already
-ticked](https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22zone%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22dns_records%22%2C%22type%22%3A%22edit%22%7D%5D&name=Survival+Stack&accountId=*&zoneId=*).
-Press Continue, then Create. Copy the token. It is shown once.
+**A Cloudflare API token.** You do not have to make this in advance. Run
+`./scripts/migrate.sh yourdomain.com` and it opens the page for you with the
+boxes already ticked, then takes the token off your clipboard when you press
+copy. Nothing to paste, nothing to save.
 
-If you would rather tick them yourself: Create Token → Create Custom Token, then
-**Zone → Zone → Edit** and **Zone → DNS → Edit**, with Zone Resources set to All
-zones. Edit rather than Read on the first one, because that is what lets the
-setup page add a domain to Cloudflare for you instead of asking you to do it in
-the dashboard.
+If you want it in advance: [this link opens the token form ready to
+go](https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22zone%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22dns_records%22%2C%22type%22%3A%22edit%22%7D%5D&name=Survival+Stack&accountId=*&zoneId=*).
+Press Continue, then Create. Or tick them by hand: Create Token → Create Custom
+Token, then **Zone → Zone → Edit** and **Zone → DNS → Edit**, Zone Resources set
+to All zones.
+
+**Why this is not `wrangler login`.** It is, for most of the setup — the deploy,
+KV and secrets all go through the OAuth login. But wrangler's OAuth offers 27
+scopes and the only zone one is `zone:read`. Asking for `zone:edit` or
+`dns_records:edit` is refused before the browser opens. Creating a zone and
+writing a DNS record need both, so those two jobs need a token. Cloudflare has
+two permission systems and only one has an OAuth front door.
 
 **A Telegram bot.** Open Telegram, search for
 [@BotFather](https://t.me/BotFather), send it `/newbot`, and answer its two

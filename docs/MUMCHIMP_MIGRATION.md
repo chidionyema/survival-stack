@@ -1,18 +1,51 @@
 # Moving mumchimp.com to Cloudflare
 
-You do one thing. Paste two nameservers into one form at 123-reg. Everything
-else is a command.
+One command. Nothing to type.
 
 ```
-CF_API_TOKEN=... node scripts/migrate-domain.mjs mumchimp.com --watch
+./scripts/migrate.sh mumchimp.com
 ```
 
-Or, if you would rather see it than type it, the setup console has the same
-thing as a box and a button:
+The first time, it opens Cloudflare's token page with the permission boxes
+already ticked. Press **Continue to summary**, **Create Token**, then the copy
+button. It takes the token off the clipboard the moment it appears, checks it,
+and puts it in your login keychain. It never asks again.
+
+Then it moves the domain and waits. Your only step is pasting two nameservers
+into one form at 123-reg, at the end, once it says both sides answer
+identically.
+
+The setup console has the same thing as a box and a button, if you would rather
+see it: `open "Set up Survival Stack.command"`.
+
+---
+
+## 0. Why not `wrangler login`
+
+Because it cannot do this, and no flag makes it. Measured on wrangler 4.125.0:
 
 ```
-open "Set up Survival Stack.command"
+$ wrangler login --scopes-list | grep -c .              # 27 scopes offered
+$ wrangler login --scopes-list | grep -E 'zone|dns'
+  zone:read
+
+$ wrangler login --scopes zone:edit
+  ✘ [ERROR] Invalid authentication scope: "zone:edit".
+
+$ wrangler login --scopes dns_records:edit
+  ✘ [ERROR] Invalid authentication scope: "dns_records:edit".
 ```
+
+Creating a zone is `POST /zones`, which needs zone **edit**. Writing a record
+needs dns_records **edit**. Cloudflare's OAuth client offers neither, so an
+OAuth token gets a 403 however the flow is dressed up.
+
+`wrangler login` is still used, for what it does cover: the Worker deploy, KV,
+and secrets. Cloudflare has two permission systems and only one has an OAuth
+front door. That is their split, not a choice made here.
+
+`test/cf-auth.test.js` asserts both scopes are absent. If Cloudflare ever adds
+them, that test fails and the API token can be deleted from this project.
 
 ---
 

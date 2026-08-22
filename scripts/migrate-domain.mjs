@@ -11,8 +11,9 @@
 // The only step it cannot do is the registrar. 123-reg has no public API for a
 // retail account, so the last move is two strings pasted into one form. It
 // prints them, and with --watch it waits and tells you when the change lands.
-import { readFile } from 'node:fs/promises'
 import * as z from './console/zone.mjs'
+import * as auth from './lib/cf-auth.mjs'
+import { checkCfToken } from './console/checks.mjs'
 
 const b = (s) => `\x1b[1m${s}\x1b[0m`
 const dim = (s) => `\x1b[2m${s}\x1b[0m`
@@ -29,27 +30,69 @@ if (!domain || domain.startsWith('-')) {
   process.exit(2)
 }
 
-async function token() {
-  const env = process.env.CF_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN
-  if (env) return env
-  // A token in a file beats a token in a shell history.
-  for (const f of ['.cf-token', `${process.env.HOME}/.cf-token`]) {
-    const v = await readFile(f, 'utf8').catch(() => null)
-    if (v?.trim()) return v.trim()
+// Getting a credential, with nothing typed.
+//
+// `wrangler login` is the right pattern and the rest of this project uses it.
+// It cannot be used here. Its OAuth client offers 27 scopes and the only zone
+// one is `zone:read`; asking for `zone:edit` or `dns_records:edit` is refused
+// by wrangler before the browser even opens. Creating a zone and writing a
+// record need both. So this needs an API token, and the only thing left to
+// remove is the typing.
+async function getToken() {
+  let { token: T, from } = await auth.findToken()
+  if (T) { say(dim(`  credential from ${from}`)); return T }
+  if (dryRun) return null
+
+  say('')
+  say(b('One-time Cloudflare authorisation'))
+  say('')
+  say('  Opening the token page. The permission boxes are already ticked.')
+  say('  Press ' + b('Continue to summary') + ', then ' + b('Create Token') + ', then the copy button.')
+  say('')
+  say(dim('  Nothing to paste. While this is waiting it watches the clipboard for a'))
+  say(dim('  40-character Cloudflare token and takes it the moment it appears. It'))
+  say(dim('  ignores anything of another shape and never prints what it saw.'))
+  say('')
+  await auth.openBrowser(auth.TOKEN_URL)
+  say(dim('  if the browser did not open: ' + auth.TOKEN_URL))
+  say('')
+
+  const got = await auth.waitForTokenOnClipboard({
+    seconds: 300,
+    validate: (t) => checkCfToken(t),
+    onTick: (msg, left) => {
+      if (msg) say(red('  ' + msg))
+      else process.stdout.write(`\r  waiting for the copy… ${left}s   `)
+    },
+  })
+  process.stdout.write('\r' + ' '.repeat(46) + '\r')
+  if (!got.token) {
+    say(red('  nothing arrived. Run it again, or set CF_API_TOKEN yourself.'))
+    process.exit(1)
   }
-  return null
+  // Keychain, not a dotfile: locked with the login password, absent from
+  // directory listings, backups and anything anyone pastes into a chat window.
+  await auth.keychainSet(got.token)
+  say(grn('  got it — ' + got.note + ', saved to your login keychain'))
+  say(dim('  it will not ask again. To forget it: security delete-generic-password -s ' + auth.SERVICE))
+  return got.token
 }
 
-const T = await token()
-if (!T && !dryRun) {
-  say(red('No Cloudflare token.'))
-  say('')
-  say('  One click makes one, already ticked:')
-  say('  ' + b('https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22zone%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22dns_records%22%2C%22type%22%3A%22edit%22%7D%5D&name=Survival+Stack&accountId=*&zoneId=*'))
-  say('')
-  say('  Then:  echo "PASTE" > ~/.cf-token && chmod 600 ~/.cf-token')
-  say('  Then:  node scripts/migrate-domain.mjs ' + domain + ' --watch')
-  process.exit(1)
+const T = await getToken()
+
+// Check the credential before using it. Without this the first failure is
+// whatever call happens to run first, and its error describes that call rather
+// than the real problem — a junk token was reporting as a missing Account:Read
+// permission, which sends you to the wrong page to fix the wrong thing.
+if (T) {
+  const v = await checkCfToken(T)
+  if (!v.ok) {
+    say(red(`Cloudflare will not accept this credential: ${v.note}`))
+    say(dim('  to forget the stored one and start again:'))
+    say(dim('    security delete-generic-password -s ' + auth.SERVICE))
+    process.exit(1)
+  }
+  say(dim(`  ${v.note}`))
 }
 
 // ---------------------------------------------------------------- 1. read it
