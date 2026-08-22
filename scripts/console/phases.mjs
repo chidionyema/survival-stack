@@ -154,7 +154,16 @@ export async function prepare(domain, token, { dir = STATE_DIR, onEach = () => {
 // Ask both nameserver sets the same questions and refuse to say ready unless
 // the answers match. This is the gate that stands between a half-written zone
 // and a shop that stops answering.
-export async function verify(domain, { dir = STATE_DIR, dns = z, resolve4 = dnsp.resolve4 } = {}) {
+// A record written a second ago is not yet a record the edge answers with.
+// Measured on mumchimp.com: prepare wrote all 8, verify ran immediately after
+// and reported all 8 missing; the same command 40 seconds later said Identical.
+// A gate that cries wolf on its own writes teaches people to re-run it until it
+// agrees, which is the one habit this gate exists to prevent. So it waits.
+export async function verify(domain, {
+  dir = STATE_DIR, dns = z, resolve4 = dnsp.resolve4,
+  attempts = 6, waitMs = 8000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+  onWait = () => {},
+} = {}) {
   const state = await loadState(domain, dir)
   if (!state?.preparedAt) return stop('run prepare first - the zone has not been written yet')
 
@@ -164,7 +173,12 @@ export async function verify(domain, { dir = STATE_DIR, dns = z, resolve4 = dnsp
   }
   if (!newIps.length) return stop('the new nameservers do not resolve yet - wait and run verify again')
 
-  const d = await dns.compare(domain, state.oldIps, newIps)
+  let d = await dns.compare(domain, state.oldIps, newIps)
+  for (let i = 1; i < attempts && !d.ready; i++) {
+    onWait(d.missing.length, i, attempts)
+    await sleep(waitMs)
+    d = await dns.compare(domain, state.oldIps, newIps)
+  }
   if (!d.ready) {
     await saveState(domain, { verifiedAt: null }, dir)
     return stop(`${d.missing.length} records are missing on the new side`, { diff: d })

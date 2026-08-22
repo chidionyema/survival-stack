@@ -312,11 +312,67 @@ test('verify refuses when a record did not make it across, and names it', async 
     const r = await ph.verify(DOMAIN, {
       dir,
       resolve4: resolves,
+      sleep: async () => {},
       dns: fakeDns({ compare: async () => ({ total: 8, missing: [missing], extra: [], ready: false }) }),
     })
     assert.equal(r.ok, false)
     assert.deepEqual(r.diff.missing, [missing])
     assert.equal((await ph.loadState(DOMAIN, dir)).verifiedAt, null, 'a stale pass was left in the file')
+  })
+})
+
+test('incident: verify called its own writes missing, seconds after making them', async () => {
+  // mumchimp.com, 2026-08-22. prepare wrote all 8 records and verify, running
+  // immediately after in the same process, reported all 8 missing and printed
+  // "NOT READY. Do not touch the registrar." The records were there: the same
+  // command 40 seconds later said Identical, and dig against both Cloudflare
+  // nameservers answered correctly the whole time.
+  //
+  // The gate was right to be strict and wrong to be instant. A false NOT READY
+  // teaches the reader to re-run the gate until it agrees with them, which is
+  // exactly the habit that puts a half-written zone onto a live domain.
+  let asked = 0
+  const slept = []
+  await withMock({}, async ({ dir }) => {
+    await discovered(dir)
+    await ph.validate(DOMAIN, 'test-token-good', { dir })
+    await ph.prepare(DOMAIN, 'test-token-good', { dir })
+
+    const r = await ph.verify(DOMAIN, {
+      dir,
+      resolve4: resolves,
+      sleep: async (ms) => { slept.push(ms) },
+      // The edge catches up on the third question, as it did for real.
+      dns: fakeDns({
+        compare: async () => (++asked >= 3
+          ? { total: 8, missing: [], extra: [], ready: true }
+          : { total: 8, missing: ['not answered yet'], extra: [], ready: false }),
+      }),
+    })
+
+    assert.equal(r.ok, true, 'verify still reports its own writes as missing')
+    assert.equal(asked, 3, 'it did not ask again')
+    assert.equal(slept.length, 2, 'it retried without waiting, so the retry proves nothing')
+    assert.ok(slept.every((ms) => ms > 0))
+    assert.ok((await ph.loadState(DOMAIN, dir)).verifiedAt, 'the pass was not recorded')
+  })
+})
+
+test('verify still refuses when the records really are missing, however long it waits', async () => {
+  // The other half of the incident fix. Waiting must not become agreeing.
+  await withMock({}, async ({ dir }) => {
+    await discovered(dir)
+    await ph.validate(DOMAIN, 'test-token-good', { dir })
+    await ph.prepare(DOMAIN, 'test-token-good', { dir })
+
+    const r = await ph.verify(DOMAIN, {
+      dir,
+      resolve4: resolves,
+      sleep: async () => {},
+      dns: fakeDns({ compare: async () => ({ total: 8, missing: ['gone'], extra: [], ready: false }) }),
+    })
+    assert.equal(r.ok, false, 'the retry loop turned a real failure into a pass')
+    assert.equal((await ph.loadState(DOMAIN, dir)).verifiedAt, null)
   })
 })
 

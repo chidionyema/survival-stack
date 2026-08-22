@@ -204,7 +204,10 @@ for (const step of only) {
   if (step === 'verify') {
     say('')
     say(b('Asking both sets of nameservers the same questions'))
-    const r = await ph.verify(domain)
+    const r = await ph.verify(domain, {
+      onWait: (missing, i, of) =>
+        say(dim(`  ${missing} not answered by Cloudflare yet - waiting (${i}/${of - 1})`)),
+    })
     if (!r.ok) {
       if (r.diff) for (const k of r.diff.missing) say(red('  missing on Cloudflare: ') + k.slice(0, 100))
       say('')
