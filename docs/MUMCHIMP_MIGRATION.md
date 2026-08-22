@@ -49,6 +49,39 @@ them, that test fails and the API token can be deleted from this project.
 
 ---
 
+## 0b. The credential the run actually uses
+
+`POST /user/tokens` is real. A token holding **User → API Tokens → Write** can
+mint other tokens over the API, and this project uses that when it is there:
+
+```
+1. read the stored credential (keychain, or an env var)
+2. mint a token scoped to the account, permission groups Zone Write and DNS
+   Write, expires_on one hour from now
+3. do the whole migration with that one
+4. DELETE /user/tokens/:id on the way out — including on Ctrl-C
+```
+
+The line on screen is `minted a token that expires <time> and is deleted when
+this finishes`. The token itself is never printed.
+
+**It does not remove the browser click.** To create a token over the API you
+have to already hold one, and Cloudflare has no way to mint that first token
+except the dashboard. One click either way. What it buys is blast radius: the
+thing in flight during a run lives an hour and is revoked at the end.
+
+**It is attempted, never required.** A credential without API Tokens Write —
+which is what the pre-ticked link above creates — does the job directly, and
+nothing about the run changes except that one line is absent.
+
+**Worth knowing before you grant it.** API Tokens Write is the permission that
+mints permissions. A credential holding it can create a token that does
+anything the account can do, so it is strictly more dangerous than the
+Zone:Edit + DNS:Edit one, and it sits in the keychain between runs. The
+Zone+DNS token is the default here for that reason.
+
+---
+
 ## 1. What the command does, in order
 
 1. **Reads the zone from the nameservers answering for it right now.** Not from

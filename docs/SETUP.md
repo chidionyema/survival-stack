@@ -74,6 +74,15 @@ scopes and the only zone one is `zone:read`. Asking for `zone:edit` or
 writing a DNS record need both, so those two jobs need a token. Cloudflare has
 two permission systems and only one has an OAuth front door.
 
+**If you give it API Tokens Write too, it uses it.** Cloudflare's
+`POST /user/tokens` lets one token mint others, so when the stored credential
+carries **User → API Tokens → Write** the migration mints a second token that
+expires in an hour, does the work with that, and deletes it on the way out.
+That does not save you a click — the first token has to come from the dashboard
+whatever happens — and the permission is account-takeover grade, so it is
+offered, not asked for. The link above does not include it, and everything
+works without it.
+
 **A Telegram bot.** Open Telegram, search for
 [@BotFather](https://t.me/BotFather), send it `/newbot`, and answer its two
 questions. It gives you a token that looks like `123456789:AAxxxx...`. Copy it.

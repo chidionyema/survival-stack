@@ -141,3 +141,78 @@ test('a token Cloudflare rejects is not accepted just because it is the right sh
     await pbcopy(original)
   }
 })
+
+// --------------------------------------------------------- minting a token
+
+// POST /user/tokens takes bearer auth, so a credential holding User → API
+// Tokens → Write can mint others. It does not remove the browser — Cloudflare
+// requires the first token be dashboard-minted either way — but it means the
+// credential actually in flight during a run is one that expires in an hour
+// and is deleted at the end.
+const withFetch = async (handler, fn) => {
+  const real = globalThis.fetch
+  globalThis.fetch = handler
+  try { return await fn() } finally { globalThis.fetch = real }
+}
+const reply = (body, ok = true) => new Response(JSON.stringify({ success: ok, result: body }), {
+  status: ok ? 200 : 403, headers: { 'content-type': 'application/json' },
+})
+
+const GROUPS = [
+  { id: 'grp-zone-write', name: 'Zone Write', scopes: ['com.cloudflare.api.account'] },
+  { id: 'grp-dns-write', name: 'DNS Write', scopes: ['com.cloudflare.api.account.zone'] },
+  { id: 'grp-zone-read', name: 'Zone Read', scopes: ['com.cloudflare.api.account'] },
+]
+
+test('the minted token is scoped, time-boxed, and asks for the two groups it needs', async () => {
+  let sent = null
+  const got = await withFetch(async (url, opts) => {
+    if (String(url).includes('permission_groups')) return reply(GROUPS)
+    if (String(url).endsWith('/user/tokens') && opts.method === 'POST') {
+      sent = JSON.parse(opts.body)
+      return reply({ id: 'tok-1', value: 'v'.repeat(40) })
+    }
+    throw new Error('unexpected call: ' + url)
+  }, () => auth.mintEphemeral('r'.repeat(40), 'acct-123', { hours: 1 }))
+
+  assert.equal(got.id, 'tok-1')
+  assert.equal(got.token, 'v'.repeat(40))
+
+  assert.deepEqual(sent.policies[0].permission_groups, [{ id: 'grp-zone-write' }, { id: 'grp-dns-write' }])
+  assert.deepEqual(Object.keys(sent.policies[0].resources), ['com.cloudflare.api.account.acct-123'])
+
+  // Time-boxed, and in the future. A token minted without an expiry is just a
+  // second permanent credential with extra steps.
+  assert.ok(sent.expires_on, 'no expiry was set')
+  const secondsOut = (Date.parse(sent.expires_on) - Date.now()) / 1000
+  assert.ok(secondsOut > 3000 && secondsOut < 3900, `expiry was ${secondsOut}s out`)
+})
+
+test('a credential that cannot mint returns null rather than failing the run', async () => {
+  // The normal case. Most tokens do not carry API Tokens Write, and the run
+  // must carry on with what it has instead of stopping.
+  const denied = await withFetch(async () => reply(null, false),
+    () => auth.mintEphemeral('r'.repeat(40), 'acct-123'))
+  assert.equal(denied, null)
+
+  // Present but missing a group it needs — also null, not a half-scoped token.
+  const partial = await withFetch(async (url) => {
+    if (String(url).includes('permission_groups')) return reply([GROUPS[2]])
+    throw new Error('should not have tried to mint')
+  }, () => auth.mintEphemeral('r'.repeat(40), 'acct-123'))
+  assert.equal(partial, null)
+})
+
+test('revoking uses the root credential, not the token being deleted', async () => {
+  let sawAuth = null
+  let sawUrl = null
+  const ok = await withFetch(async (url, opts) => {
+    sawUrl = String(url)
+    sawAuth = opts.headers.authorization
+    return reply({ id: 'tok-1' })
+  }, () => auth.revokeToken('r'.repeat(40), 'tok-1'))
+
+  assert.equal(ok, true)
+  assert.equal(sawUrl, 'https://api.cloudflare.com/client/v4/user/tokens/tok-1')
+  assert.equal(sawAuth, 'Bearer ' + 'r'.repeat(40), 'the ephemeral token cannot delete itself')
+})

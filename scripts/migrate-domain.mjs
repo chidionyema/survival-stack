@@ -78,14 +78,14 @@ async function getToken() {
   return got.token
 }
 
-const T = await getToken()
+const ROOT = await getToken()
 
 // Check the credential before using it. Without this the first failure is
 // whatever call happens to run first, and its error describes that call rather
 // than the real problem — a junk token was reporting as a missing Account:Read
 // permission, which sends you to the wrong page to fix the wrong thing.
-if (T) {
-  const v = await checkCfToken(T)
+if (ROOT) {
+  const v = await checkCfToken(ROOT)
   if (!v.ok) {
     say(red(`Cloudflare will not accept this credential: ${v.note}`))
     say(dim('  to forget the stored one and start again:'))
@@ -93,6 +93,35 @@ if (T) {
     process.exit(1)
   }
   say(dim(`  ${v.note}`))
+}
+
+// If the stored credential can mint tokens, do not use it for the work. Mint
+// one that dies in an hour, use that, and delete it on the way out — including
+// on Ctrl-C, which is the exit path that actually happens.
+let T = ROOT
+let ephemeral = null
+if (ROOT && !dryRun) {
+  const id = await z.accountId(ROOT)
+  if (id) {
+    ephemeral = await auth.mintEphemeral(ROOT, id, { hours: 1 })
+    if (ephemeral) {
+      T = ephemeral.token
+      say(dim(`  minted a token that expires ${ephemeral.expires} and is deleted when this finishes`))
+    }
+  }
+}
+
+const bail = async (code) => { await cleanUp(); process.exit(code) }
+
+async function cleanUp() {
+  if (!ephemeral) return
+  const gone = await auth.revokeToken(ROOT, ephemeral.id)
+  ephemeral = null
+  say(dim(gone ? '  ephemeral token deleted' : '  could not delete the ephemeral token — it expires within the hour'))
+}
+process.on('exit', () => { if (ephemeral) process.stderr.write('\n  ephemeral token left to expire\n') })
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.on(sig, async () => { await cleanUp(); process.exit(130) })
 }
 
 // ---------------------------------------------------------------- 1. read it
@@ -119,7 +148,7 @@ if (zone) {
   say(`  zone already exists (${zone.status})`)
 } else {
   const acct = await z.accountId(T)
-  if (!acct) { say(red('  the token cannot read an account — it needs Account:Read as well')); process.exit(1) }
+  if (!acct) { say(red('  the token cannot read an account — it needs Account:Read as well')); await bail(1) }
   zone = await z.createZone(T, acct, domain)
   say(`  zone created (${zone.status})`)
   say(dim('  waiting for its own scan, as a second opinion on the record list'))
@@ -149,7 +178,7 @@ const res = await z.writeRecords(T, zone.id, real, (r) => {
   const mark = r.state === 'added' ? grn('+') : r.state === 'already there' ? dim('=') : red('!')
   say(`  ${mark} ${r.type.padEnd(5)} ${r.name.padEnd(38)} ${r.state === 'added' || r.state === 'already there' ? '' : r.state}`)
 })
-if (res.failed.length) { say(red(`  ${res.failed.length} refused — not safe to switch`)); process.exit(1) }
+if (res.failed.length) { say(red(`  ${res.failed.length} refused — not safe to switch`)); await bail(1) }
 
 // -------------------------------------------------------------- 5. prove it
 
@@ -167,9 +196,12 @@ say('')
 if (!d.ready) {
   say(red(b('NOT READY. Do not touch the registrar.')))
   say('  Every line above marked missing has to be there first.')
-  process.exit(1)
+  await bail(1)
 }
 say(grn(b('Identical. Cloudflare answers exactly as the old nameservers do.')))
+// Nothing past here calls Cloudflare — the watch loop only asks nameservers.
+// So the credential goes back now rather than sitting live for the wait.
+await cleanUp()
 
 // ----------------------------------------------------------- 6. the one step
 
@@ -184,7 +216,7 @@ say(dim('  Nothing else changes. Every record above already answers identically,
 say(dim('  so the shop and the mail carry on through the switch. To undo: put'))
 say(dim(`  ${before.names.join(' and ')} back.`))
 
-if (!watch) { say(''); say(dim('  Run again with --watch and it will tell you when the change lands.')); process.exit(0) }
+if (!watch) { say(''); say(dim('  Run again with --watch and it will tell you when the change lands.')); await bail(0) }
 
 // -------------------------------------------------------------- 7. wait for it
 
@@ -198,7 +230,7 @@ for (let i = 0; i < 720; i++) {
     say(grn(b('Live on Cloudflare.')) + ` ${domain} is answered by ${newNs.join(' and ')}.`)
     const post = await z.compare(domain, newIps, newIps)
     say(`  ${post.total} records still answering.`)
-    process.exit(0)
+    await bail(0)
   }
   process.stdout.write(`\r  ${new Date().toISOString().slice(11, 19)}  still ${now.join(', ') || 'unresolved'}   `)
   await new Promise((r) => setTimeout(r, 60000))

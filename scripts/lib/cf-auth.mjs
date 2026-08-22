@@ -144,3 +144,76 @@ export async function waitForTokenOnClipboard({ seconds = 300, onTick = () => {}
 export function openBrowser(url) {
   return run('/usr/bin/open', [url]).catch(() => null)
 }
+
+// ------------------------------------------------------- tokens minting tokens
+
+// POST /user/tokens exists and takes bearer auth, so a token holding
+// "User → API Tokens → Write" can mint others. It does not remove the browser:
+// Cloudflare requires the first token be dashboard-minted, so the click count
+// is one either way. What it buys is a smaller thing to lose.
+//
+// The stored credential stays where it is. Each run mints a token that expires
+// in an hour and is deleted the moment the work finishes, so the credential
+// actually in flight is short-lived even though the one in the keychain is not.
+//
+// It is attempted, never required. A credential without that permission does
+// the job directly, and nothing about the run changes except this one line.
+
+const API = 'https://api.cloudflare.com/client/v4'
+
+async function api(token, path, opts = {}) {
+  const r = await fetch(API + path, {
+    ...opts,
+    signal: AbortSignal.timeout(25000),
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', ...(opts.headers || {}) },
+  })
+  const body = await r.json().catch(() => ({}))
+  return { ok: r.ok && body.success !== false, body }
+}
+
+// The permission group ids are UUIDs and they are not stable enough to paste
+// into source. Ask for them.
+export async function permissionGroups(token) {
+  const r = await api(token, '/user/tokens/permission_groups?per_page=200')
+  if (!r.ok) return null
+  return r.body.result || []
+}
+
+const findGroup = (groups, name, scope) =>
+  groups.find((g) => g.name === name && (g.scopes || []).includes(scope))
+
+// Returns null when the credential cannot mint, which is the normal case and
+// not an error. The caller carries on with what it already has.
+export async function mintEphemeral(token, accountId, { hours = 1 } = {}) {
+  const groups = await permissionGroups(token)
+  if (!groups) return null
+
+  const zoneWrite = findGroup(groups, 'Zone Write', 'com.cloudflare.api.account')
+  const dnsWrite = findGroup(groups, 'DNS Write', 'com.cloudflare.api.account.zone')
+  if (!zoneWrite || !dnsWrite) return null
+
+  // Account scope, not zone scope. Creating a zone is an account-level act and
+  // the zone it creates has no id to narrow to yet. The expiry is what bounds
+  // this one, not the resource list.
+  const expires = new Date(Date.now() + hours * 3600_000).toISOString().replace(/\.\d{3}/, '')
+  const r = await api(token, '/user/tokens', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: `survival-stack ephemeral ${expires.slice(0, 16)}`,
+      status: 'active',
+      expires_on: expires,
+      policies: [{
+        effect: 'allow',
+        resources: { [`com.cloudflare.api.account.${accountId}`]: '*' },
+        permission_groups: [{ id: zoneWrite.id }, { id: dnsWrite.id }],
+      }],
+    }),
+  })
+  if (!r.ok || !r.body.result?.value) return null
+  return { token: r.body.result.value, id: r.body.result.id, expires }
+}
+
+export async function revokeToken(rootToken, tokenId) {
+  const r = await api(rootToken, `/user/tokens/${tokenId}`, { method: 'DELETE' })
+  return r.ok
+}

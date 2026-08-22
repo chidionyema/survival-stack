@@ -28,7 +28,7 @@ must do, and the five it does not have to.
 | `scripts/setup.sh` | Four lines that open it |
 | `scripts/console/zone.mjs` | Moves a domain onto Cloudflare and refuses to say ready unless both nameserver sets answer identically |
 | `scripts/migrate.sh` | Move a domain onto Cloudflare. One command, nothing typed |
-| `scripts/lib/cf-auth.mjs` | Finds a Cloudflare credential, or catches one off the clipboard into the keychain |
+| `scripts/lib/cf-auth.mjs` | Finds a Cloudflare credential, or catches one off the clipboard into the keychain. Mints an hour-long token per run where the account allows it |
 | `scripts/exit-drill.sh` | Proves you can leave. Run it on a schedule |
 
 Zero runtime dependencies. `wrangler` is a dev tool, not a dependency of the code.
@@ -38,7 +38,7 @@ Zero runtime dependencies. `wrangler` is a dev tool, not a dependency of the cod
 Double-click **Set up Survival Stack.command** in Finder. Or, from anywhere:
 
 ```bash
-npm test          # 64 tests, no network
+npm test          # 67 tests, no network
 npm run secrets   # opens the setup console in your browser
 ```
 
@@ -134,8 +134,8 @@ example tests of orchestration.
 
 ```
 $ npm test
-ℹ tests 64
-ℹ pass 64
+ℹ tests 67
+ℹ pass 67
 ℹ fail 0
 ```
 
