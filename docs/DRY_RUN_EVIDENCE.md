@@ -4,6 +4,8 @@ Run on 2026-08-22 on the founder's laptop. Total spend: nothing.
 The Worker under test is the production one, running in `workerd` under
 `wrangler dev`. Only the world around it is faked.
 
+Reproduce with `scripts/dry-run.sh`, then `scripts/dry-run.sh down`.
+
 ```
 TEST A — failover: the standby takes over
   cold-starting primary from Telegram
@@ -27,7 +29,7 @@ TEST B — cold start from a park bench, with the data
 
 TEST C — every box gone, the shop stays open
   PASS  the catalog still renders from R2
-  PASS  an order was still taken: {"ok":true,"id":"d1cef967-322c-4fbd-904e-f0a4bf7e0912","message":"Order received
+  PASS  an order was still taken: {"ok":true,"id":"99836041-5df9-4df6-818c-e8f499eb6876","message":"Order received
   PASS  the queued order is in the audit log
 
 TEST D — swap the database, the stack does not notice
@@ -37,24 +39,58 @@ TEST D — swap the database, the stack does not notice
   PASS  the sidecar refuses a mode it does not know
   PASS  the same engine image serves on postgres
 
-15 passed, 0 failed
+TEST E — deploy: a new version, and a bad one that never reaches the customer
+  making sure something is serving before the deploy
+  /deploy v2 from Telegram
+  PASS  the box now runs the image the deploy named: survival-lab-engine:v2
+  PASS  the deploy is in the audit log
+  PASS  the audit log names the exact image that shipped
+  deploying a version that boots but never becomes healthy
+  PASS  the control plane called the bad version unhealthy
+  PASS  the registered primary did not move to the unhealthy box
+  PASS  the unhealthy boot is in the audit log
+
+TEST F — the Sunday shadow test proves a provider and destroys the evidence
+  firing the Sunday cron trigger, not a hand-rolled call
+  PASS  the shadow test came up healthy and said so
+  PASS  the last shadow result is recorded for the console
+  PASS  the control plane says it destroyed the test box
+  PASS  the provider is left with no extra box (7 before, 7 after)
+  PASS  no shadow container left running
+
+TEST G — a box that never reports in is swept, not left billing
+  cold-starting a box that will never call home
+  PASS  the job is open and waiting for a callback
+  running the sweep while the job is still young — it must leave it alone
+  PASS  the sweep did not kill a box that is still booting
+  waiting for the job to pass the stale window (STALE_MS=30000ms in the lab, 15m in production)
+  PASS  the stale job is gone
+  PASS  the timeout is in the audit log
+  PASS  the founder was told, without asking
+  FAIL  the provider is still holding the dead box
+
+TEST H — the refusals: no fingerprint, no action
+  a wrong code
+  PASS  a wrong code is refused, and the founder is told
+  a replayed code
+  PASS  the same code cannot be spent twice: {"ok":false,"error":"That code was already used. Wait for th
+  no code at all
+  PASS  an action with no code is refused
+  a forged Telegram webhook
+  PASS  a forged webhook gets 401
+  PASS  the forgery is in the audit log
+  a callback with a nonce nobody issued
+  PASS  an unknown nonce cannot register a box
+  the destroy path, with a real code
+  PASS  a destroy with a valid code is carried out
+
+38
+
+passed, 1 failed
 ```
 
-## What the first run found
+## What this does not prove
 
-The first run scored 8 passed, 7 failed. Three of those were real defects,
-not test noise:
-
-1. **Degraded mode lost the order it existed to save.** A POST to a dead
-   origin consumed the request body, so by the time the code fell through to
-   queueing it, there was nothing left to read: `{"ok":false,"error":"bad json"}`.
-   Fixed in `src/degraded.js`; `test/incident-degraded-order.test.js` holds the case.
-2. **The degraded catalog's own order form was refused.** The page posts an HTML
-   form; the queue parsed JSON only. Same file, same test.
-3. **The sidecars complained about credentials when given a bad mode.** The verb
-   is now checked first, so the message names what the caller got wrong.
-
-Two were faults in the test rig, worth recording because both looked like
-product bugs at first: port 8787 is already the founder board on this machine,
-and the tests were replaying one TOTP code across two actions, which the
-control plane refused — correctly.
+Real VM boot time, provider API quirks, real DNS propagation, Let's Encrypt
+issuance and live Stripe. Those need money and a real Monday. `TASK.md` is that
+week, with the command that proves each purchase.

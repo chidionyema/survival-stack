@@ -423,6 +423,20 @@ Once the dry run passes all 4 tests:
 4. `vault/bot.py` — the polling-mode Telegram bot
 5. The 4 test commands above
 
+### Where those five things actually live
+
+The list above is the original brief. v5.1 moved two of them, so here is the
+same list against the tree as it stands. Nothing is missing; it is named
+differently because the vault box was deleted.
+
+| The brief said | It is | Why it moved |
+|---|---|---|
+| `dry-run.yml` | `lab/dry-run.yml` | unchanged |
+| `mock-surge` | `src/providers/docker.js` and `lab/shim.js` | `surge` became Worker code, so its fake became a provider driver |
+| `engine/app.py` | `lab/engine/app.py` | unchanged |
+| `vault/bot.py` | `src/telegram.js` and the `/telegram` route in `src/index.js` | there is no vault box to run a polling loop on |
+| the 4 test commands | `scripts/dry-run.sh a` to `d`, and `e` to `h` for deploy, shadow test, sweep and refusals | unchanged, plus four |
+
 **Assignment:** "Make all 4 dry-run tests pass. Submit evidence (screenshots, logs). Then we go live."
 
 No money spent. Architecture proven. Sleep secured.

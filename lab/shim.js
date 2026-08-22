@@ -68,6 +68,7 @@ function parseUserData(userData) {
 
 async function bootBox(id, name, userData) {
   const { nonce, callback, role, image } = parseUserData(userData)
+  const plan = nextBoot; nextBoot = {} // claimed at the start of this boot, not the end
   const vol = `${name}-data`
   try {
     await run('docker', ['volume', 'create', vol])
@@ -109,7 +110,6 @@ async function bootBox(id, name, userData) {
     servers.get(id).ip = ip
 
     let health = 'unhealthy'
-    const plan = nextBoot; nextBoot = {}
     for (let i = 0; i < (plan.health === 'bad' ? 0 : 60); i++) {
       try {
         await run('docker', ['exec', name, 'curl', '-fsS', 'http://localhost:3000/health'])

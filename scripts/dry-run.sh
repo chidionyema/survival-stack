@@ -2,7 +2,7 @@
 # The Monday Test, on a laptop, for nothing.
 #
 #   scripts/dry-run.sh up      build and start the lab
-#   scripts/dry-run.sh test    run tests A to D and print PASS or FAIL
+#   scripts/dry-run.sh test    run tests A to H and print PASS or FAIL
 #   scripts/dry-run.sh down    stop everything and remove it
 #   scripts/dry-run.sh         up, then test
 #
@@ -21,6 +21,10 @@ SHIM=http://127.0.0.1:2456
 LAB_TOTP=JBSWY3DPEHPK3PXP
 LAB_HOOK=lab-webhook-secret
 
+# Production waits 15 minutes before it gives up on a box. The lab waits 30
+# seconds, so the sweep can be tested for real instead of being trusted.
+LAB_STALE_MS=30000
+
 pass=0; fail=0
 ok()   { echo "  PASS  $*"; pass=$((pass+1)); }
 bad()  { echo "  FAIL  $*"; fail=$((fail+1)); }
@@ -28,7 +32,13 @@ step() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 
 # A code can only be spent once, by design. Wait for the next window rather
 # than replaying one, which the control plane would refuse — correctly.
-LAST_CODE_FILE=$(mktemp)
+#
+# The spend record is a file on disk, not a shell variable, because the behave
+# harness in features/lab.py spends codes from a different process against the
+# same Worker. Two harnesses inside one 30-second window would otherwise replay
+# a code and get a 401 that looks like a broken test. Same path both sides.
+LAST_CODE_FILE=${LAB_TOTP_SPEND:-$ROOT/lab/state/last-totp}
+mkdir -p "$(dirname "$LAST_CODE_FILE")"
 code() {
   local c prev
   prev=$(cat "$LAST_CODE_FILE" 2>/dev/null)
@@ -77,7 +87,7 @@ lab_up() {
 
   step "Starting the real Worker"
   pkill -f 'wrangler dev' 2>/dev/null
-  ( npx wrangler dev --port 8799 --local \
+  ( npx wrangler dev --port 8799 --local --test-scheduled \
       --var DOMAIN:lab.test \
       --var CF_API_BASE:"$SHIM/cf" --var CF_ZONE_ID:zone --var CF_DNS_RECORD_ID:apex --var CF_API_TOKEN:lab \
       --var TELEGRAM_API_BASE:"$SHIM/tg/bot" --var TELEGRAM_BOT_TOKEN:lab \
@@ -91,6 +101,7 @@ lab_up() {
       --var R2_ACCESS_KEY:admin --var R2_SECRET_KEY:password123 \
       --var SSH_KEY_NAME:lab --var STRIPE_SECRET_KEY:sk_test_lab --var JWT_SECRET:lab \
       --var LIGHTHOUSE_ORIGIN:'*' \
+      --var STALE_MS:"$LAB_STALE_MS" --var SHADOW_PROVIDERS:docker \
       >"$LOGS/wrangler.log" 2>&1 & )
   wait_for 60 "curl -sf $WORKER/health | grep -q survival-control-plane" || { echo "worker did not start"; tail -20 "$LOGS/wrangler.log"; return 1; }
 
@@ -230,13 +241,181 @@ c.execute('CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, at TEXT NOT N
   docker rm -f lab-engine-pg >/dev/null 2>&1
 }
 
+# --------------------------------------------------------------- tests E to H
+shim_next() { curl -s -X POST "$SHIM/docker/_next" -H 'content-type: application/json' -d "$1" >/dev/null; }
+tg_clear()  { curl -s -X POST "$SHIM/tg/_clear" >/dev/null; }
+tg_said()   { curl -s "$SHIM/tg/_sent" | grep -qF "$1"; }
+audit_has() { curl -s "$WORKER/api/audit?limit=100" | grep -qF "$1"; }
+primary_image() {
+  docker ps -q --filter 'label=survival.role=primary' \
+    | head -1 | xargs -r docker inspect -f '{{.Config.Image}}' 2>/dev/null
+}
+primary_ip() { box_ip primary; }
+cron() { curl -s "$WORKER/__scheduled?cron=$1"; }
+
+test_e() {
+  step "TEST E — deploy: a new version, and a bad one that never reaches the customer"
+  docker tag survival-lab-engine survival-lab-engine:v2 >/dev/null 2>&1
+  docker tag survival-lab-engine survival-lab-engine:v3-broken >/dev/null 2>&1
+
+  echo "  making sure something is serving before the deploy"
+  if ! wait_for 3 "curl -sf http://127.0.0.1:3001/health"; then
+    api "{\"action\":\"cold-start\",\"provider\":\"docker\",\"role\":\"primary\",\"code\":\"$(code)\"}" >/dev/null
+    wait_for 240 "curl -sf http://127.0.0.1:3001/health" || { bad "no box to deploy onto"; return; }
+  fi
+
+  tg_clear
+  echo "  /deploy v2 from Telegram"
+  tg "/deploy v2 $(code)" >/dev/null
+  wait_for 240 "[ \"\$(docker ps -q --filter 'label=survival.role=primary' | head -1 | xargs -r docker inspect -f '{{.Config.Image}}')\" = survival-lab-engine:v2 ]" \
+    && ok "the box now runs the image the deploy named: $(primary_image)" \
+    || { bad "the serving box runs '$(primary_image)', not survival-lab-engine:v2"; return; }
+
+  audit_has '"deploy.started"' && ok "the deploy is in the audit log" || bad "no deploy.started in the audit log"
+  curl -s "$WORKER/api/audit?limit=100" | grep -qF 'survival-lab-engine:v2' \
+    && ok "the audit log names the exact image that shipped" || bad "the audit log does not name the image"
+
+  echo "  deploying a version that boots but never becomes healthy"
+  local before; before=$(primary_ip)
+  tg_clear
+  shim_next '{"health":"bad"}'
+  tg "/deploy v3-broken $(code)" >/dev/null
+  wait_for 240 "curl -s $SHIM/tg/_sent | grep -q 'not healthy'" \
+    && ok "the control plane called the bad version unhealthy" \
+    || bad "nothing reported the bad deploy as unhealthy"
+  [ "$(primary_ip)" = "$before" ] \
+    && ok "the registered primary did not move to the unhealthy box" \
+    || bad "an unhealthy box was registered as primary"
+  audit_has 'coldstart.unhealthy' && ok "the unhealthy boot is in the audit log" || bad "no coldstart.unhealthy audit line"
+}
+
+test_f() {
+  step "TEST F — the Sunday shadow test proves a provider and destroys the evidence"
+  tg_clear
+  local before after
+  before=$(curl -s "$SHIM/docker/_servers" | node -pe 'JSON.parse(require("fs").readFileSync(0)).length')
+
+  echo "  firing the Sunday cron trigger, not a hand-rolled call"
+  cron '0+3+*+*+SUN' >/dev/null
+  wait_for 300 "curl -s $SHIM/tg/_sent | grep -qE 'Shadow test on .* passed'" \
+    && ok "the shadow test came up healthy and said so" \
+    || { bad "the shadow test never reported a pass"; }
+
+  local s; s=$(curl -s "$WORKER/api/status")
+  echo "$s" | grep -q '"lastShadow":{' && echo "$s" | grep -q '"ok":true' \
+    && ok "the last shadow result is recorded for the console" || bad "no shadow result in /api/status"
+
+  echo "$s" | grep -q '"destroyed":true' && ok "the control plane says it destroyed the test box" \
+                                         || bad "the shadow box was not destroyed"
+  after=$(curl -s "$SHIM/docker/_servers" | node -pe 'JSON.parse(require("fs").readFileSync(0)).length')
+  [ "$after" -le "$before" ] && ok "the provider is left with no extra box ($before before, $after after)" \
+                             || bad "the provider still holds $after boxes, was $before — a shadow box is being billed"
+  docker ps -a --format '{{.Names}}' | grep -q '^survival-shadow' \
+    && bad "a shadow container is still on the host" || ok "no shadow container left running"
+}
+
+test_g() {
+  step "TEST G — a box that never reports in is swept, not left billing"
+  tg_clear
+  # Count what the provider holds first. Earlier tests leave boxes standing on
+  # purpose, so "is there a standby?" is the wrong question — the question is
+  # whether this one box came back off the bill.
+  local held_before
+  held_before=$(curl -s "$SHIM/docker/_servers" | node -pe 'JSON.parse(require("fs").readFileSync(0)).length')
+  echo "  cold-starting a box that will never call home"
+  shim_next '{"deaf":true}'
+  api "{\"action\":\"cold-start\",\"provider\":\"docker\",\"role\":\"standby\",\"code\":\"$(code)\"}" >/dev/null
+
+  wait_for 60 "curl -s $WORKER/api/status | grep -q '\"inFlight\":\[{'" >/dev/null
+  local open
+  open=$(curl -s "$WORKER/api/status" | node -pe 'JSON.parse(require("fs").readFileSync(0)).inFlight?.length ?? 0')
+  [ "${open:-0}" -ge 1 ] && ok "the job is open and waiting for a callback" || bad "no open job to sweep"
+
+  echo "  running the sweep while the job is still young — it must leave it alone"
+  cron '*%2F5+*+*+*+*' >/dev/null; sleep 2
+  open=$(curl -s "$WORKER/api/status" | node -pe 'JSON.parse(require("fs").readFileSync(0)).inFlight?.length ?? 0')
+  [ "${open:-0}" -ge 1 ] && ok "the sweep did not kill a box that is still booting" \
+                         || bad "the sweep destroyed a job inside its window"
+
+  echo "  waiting for the job to pass the stale window (STALE_MS=${LAB_STALE_MS}ms in the lab, 15m in production)"
+  sleep $(( LAB_STALE_MS / 1000 + 3 ))
+  cron '*%2F5+*+*+*+*' >/dev/null; sleep 3
+
+  open=$(curl -s "$WORKER/api/status" | node -pe 'JSON.parse(require("fs").readFileSync(0)).inFlight?.length ?? 0')
+  [ "${open:-0}" -eq 0 ] && ok "the stale job is gone" || bad "$open job(s) still open after the sweep"
+  audit_has 'coldstart.timeout' && ok "the timeout is in the audit log" || bad "no coldstart.timeout audit line"
+  tg_said 'never reported in' && ok "the founder was told, without asking" || bad "no Telegram message about the dead box"
+
+  # Two angles, because either one alone can lie. What the control plane says it
+  # did, and what the provider is actually still holding.
+  curl -s "$WORKER/api/audit?limit=200" \
+    | node -pe 'JSON.parse(require("fs").readFileSync(0)).events.some(e=>e.event==="coldstart.timeout"&&e.destroyed===true)' \
+    | grep -q true \
+    && ok "the sweep says it destroyed the box at the provider" \
+    || bad "the sweep did not report a successful destroy"
+  local held_after
+  held_after=$(curl -s "$SHIM/docker/_servers" | node -pe 'JSON.parse(require("fs").readFileSync(0)).length')
+  [ "$held_after" -eq "$held_before" ] \
+    && ok "the provider holds no more boxes than before the dead one ($held_before)" \
+    || bad "the provider went from $held_before boxes to $held_after — the dead box is still billing"
+}
+
+test_h() {
+  step "TEST H — the refusals: no fingerprint, no action"
+  local before after
+  before=$(curl -s "$SHIM/docker/_servers" | node -pe 'JSON.parse(require("fs").readFileSync(0)).length')
+  tg_clear
+
+  echo "  a wrong code"
+  tg "/cold-start docker 000000" >/dev/null
+  if tg_said '🔒'; then ok "a wrong code is refused, and the founder is told"
+  else bad "a wrong code was not refused: $(curl -s "$SHIM/tg/_sent" | tail -c 200)"; fi
+
+  echo "  a replayed code"
+  local c; c=$(code)
+  api "{\"action\":\"cold-start\",\"provider\":\"docker\",\"role\":\"standby\",\"code\":\"$c\"}" >/dev/null
+  local replay
+  replay=$(api "{\"action\":\"destroy\",\"ip\":\"10.0.0.1\",\"code\":\"$c\"}")
+  echo "$replay" | grep -q '"ok":false' && ok "the same code cannot be spent twice: $(echo "$replay" | head -c 60)" \
+                                        || bad "a replayed code was accepted: $replay"
+
+  echo "  no code at all"
+  local nocode; nocode=$(api '{"action":"promote"}')
+  echo "$nocode" | grep -q '"ok":false' && ok "an action with no code is refused" || bad "an action with no code was accepted"
+
+  echo "  a forged Telegram webhook"
+  local forged
+  forged=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$WORKER/telegram" \
+    -H 'x-telegram-bot-api-secret-token: not-the-secret' -H 'content-type: application/json' \
+    -d '{"message":{"chat":{"id":1},"text":"/status"}}')
+  [ "$forged" = 401 ] && ok "a forged webhook gets 401" || bad "a forged webhook returned $forged"
+  audit_has 'forged_webhook' && ok "the forgery is in the audit log" || bad "the forgery was not audited"
+
+  echo "  a callback with a nonce nobody issued"
+  local fake
+  fake=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$WORKER/im-alive" -H 'content-type: application/json' \
+    -d "{\"nonce\":\"$(printf 'a%.0s' $(seq 64))\",\"ip\":\"10.9.9.9\",\"health\":\"ok\"}")
+  [ "$fake" = 404 ] && ok "an unknown nonce cannot register a box" || bad "an unknown nonce returned $fake"
+
+  echo "  the destroy path, with a real code"
+  wait_for 240 "$0 _registered standby" || true
+  local ip; ip=$(box_ip standby)
+  if [ -n "$ip" ]; then
+    local d; d=$(api "{\"action\":\"destroy\",\"ip\":\"$ip\",\"code\":\"$(code)\"}")
+    echo "$d" | grep -q '"ok":true' && ok "a destroy with a valid code is carried out" || bad "destroy refused a valid code: $d"
+  else
+    bad "no standby to destroy — the earlier cold start did not finish"
+  fi
+}
+
 case "${1:-all}" in
   up)   lab_up ;;
   down) lab_down ;;
-  test) test_a; test_b; test_c; test_d
+  test) test_a; test_b; test_c; test_d; test_e; test_f; test_g; test_h
         printf '\n\033[1m%s passed, %s failed\033[0m\n' "$pass" "$fail"; [ "$fail" -eq 0 ] ;;
   a) test_a ;; b) test_b ;; c) test_c ;; d) test_d ;;
+  e) test_e ;; f) test_f ;; g) test_g ;; h) test_h ;;
   _registered) registered "$2" ;;   # used by wait_for, not by people
   all)  lab_up && "$0" test ;;
-  *) echo "usage: $0 [up|test|down|a|b|c|d]"; exit 2 ;;
+  *) echo "usage: $0 [up|test|down|a|b|c|d|e|f|g|h]"; exit 2 ;;
 esac

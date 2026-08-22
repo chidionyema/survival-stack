@@ -96,7 +96,9 @@ example tests of orchestration.
   nonce changes nothing, the sweep's 15-minute boundary, secret redaction
 - **Invariant** — cloud-init refuses to render with a missing value, leaves no
   placeholder, puts secrets only in the `0600` file
-- **Incident** — a bad base32 secret refuses rather than authenticating
+- **Incident** — a bad base32 secret refuses rather than authenticating; a
+  degraded-mode order survives the dead-origin attempt that already read the
+  body; a deploy ships the image it named instead of the configured one
 
 ```
 $ npm test
@@ -113,7 +115,7 @@ does not exist.
 
 | Real | Faked by | Where |
 |---|---|---|
-| The control plane | nothing — the real Worker runs | `wrangler dev` on port 8787 |
+| The control plane | nothing — the real Worker runs | `wrangler dev` on port 8799 |
 | Hetzner / DigitalOcean / Vultr | a provider driver whose backend is `docker run` | `src/providers/docker.js`, `lab/shim.js` |
 | R2, for the boxes | MinIO | `lab/dry-run.yml` |
 | R2, for the Worker | the local store `wrangler dev` provides | `.wrangler/state` |
@@ -121,9 +123,34 @@ does not exist.
 | Telegram | a recorder the tests can read back | `lab/shim.js` |
 
 ```bash
-scripts/dry-run.sh          # build, start, run tests A to D
+scripts/dry-run.sh          # build, start, run tests A to H
+scripts/dry-run.sh e        # one test on a lab that is already up
 scripts/dry-run.sh down     # remove all of it
 ```
+
+Eight tests, each one a thing that has to be true at 3am:
+
+| | What it proves |
+|---|---|
+| A | The standby takes over with nobody awake, and the apex follows a promote |
+| B | A box rebuilt from one Telegram line comes back with the orders in it |
+| C | Every box gone and the shop still takes an order |
+| D | The same engine image serves on Postgres, and a sidecar refuses a mode it does not know |
+| E | A deploy ships the version it named, and an unhealthy version never gets DNS |
+| F | The Sunday shadow test proves a provider and leaves no box billing |
+| G | A box that never reports in is swept and destroyed, not left running |
+| H | A wrong code, a replayed code, no code, a forged webhook and an unknown nonce all refuse |
+
+The behave suite in `features/` proves the same checkpoints through the same
+lab. `verify/cp1.sh` to `verify/cp5.sh` run them one checkpoint at a time.
+
+`TASK.md` is the week after this one: what to buy, in what order, and the
+command that proves each purchase before the next.
+
+Two seams exist only for the lab, and both default to production behaviour when
+unset: `STALE_MS` shortens the 15-minute sweep window so test G finishes in
+under a minute, and `POST /docker/_next` on the shim arms one boot to come up
+unhealthy or to never report in.
 
 The three environment seams that make this possible (`CF_API_BASE`,
 `TELEGRAM_API_BASE`, `LAB_ORIGIN_P1` / `LAB_ORIGIN_P2`) are unset in
