@@ -35,27 +35,27 @@ def outbox():
 
 @when('I GET "{path}" on the control plane')
 def step_get(context, path):
-    context.status, context.text = lab.request(f"{lab.WORKER}{path}")
+    context.status, context.body = lab.request(f"{lab.WORKER}{path}")
 
 
 @when("I POST an action with no code")
 def step_action_no_code(context):
-    context.status, context.text = lab.action({"action": "cold-start", "provider": "docker"})
+    context.status, context.body = lab.action({"action": "cold-start", "provider": "docker"})
 
 
 @then("the response status is {code:d}")
 def step_status_is(context, code):
-    assert context.status == code, f"got {context.status}: {context.text[:200]}"
+    assert context.status == code, f"got {context.status}: {context.body[:200]}"
 
 
 @then("the response status is not {code:d}")
 def step_status_is_not(context, code):
-    assert context.status != code, f"got {context.status}: {context.text[:200]}"
+    assert context.status != code, f"got {context.status}: {context.body[:200]}"
 
 
 @then('the response contains "{needle}"')
 def step_body_contains(context, needle):
-    assert needle in context.text, f"body did not contain {needle!r}: {context.text[:300]}"
+    assert needle in context.body, f"body did not contain {needle!r}: {context.body[:300]}"
 
 
 # --------------------------------------------------------------- telegram
@@ -64,12 +64,12 @@ def step_body_contains(context, needle):
 def step_telegram(context, text):
     if "{code}" in text:
         text = text.replace("{code}", lab.fresh_code())
-    context.status, context.text = lab.telegram(text)
+    context.status, context.body = lab.telegram(text)
 
 
 @when('a forged Telegram message "{text}" arrives')
 def step_telegram_forged(context, text):
-    context.status, context.text = lab.request(
+    context.status, context.body = lab.request(
         f"{lab.WORKER}/telegram", "POST",
         {"message": {"chat": {"id": 1}, "text": text}},
         {"x-telegram-bot-api-secret-token": "not-the-secret"},
@@ -91,15 +91,28 @@ def step_no_reply_mentions(context, needle):
 
 # ------------------------------------------------------------------ boxes
 
+@given("no boxes are running")
+def step_no_boxes(context):
+    lab.kill_boxes()
+    lab.kill_backups()
+    assert lab.wait_for(
+        lambda: not any(lab.origin_healthy(r, timeout=2) for r in ("primary", "standby")),
+        60, every=1.0,
+    ), "a box is still answering after being destroyed"
+
+
 @given('a "{role}" box is registered and healthy')
 def step_box_up(context, role):
-    if lab.boxes().get(role):
+    # Registered is not healthy. A killed container leaves its row in the
+    # control plane's table, so probe the box itself before believing it.
+    if lab.boxes().get(role) and lab.origin_healthy(role):
         return
+    lab.kill_boxes(role)
     payload = {"action": "cold-start", "provider": "docker", "role": role, "code": lab.fresh_code()}
     status, text = lab.action(payload)
     assert status == 200, f"cold-start refused ({status}): {text[:300]}"
-    assert lab.wait_for(lambda: bool(lab.boxes().get(role)), 300), \
-        f"the {role} never reported in to the control plane"
+    assert lab.wait_for(lambda: bool(lab.boxes().get(role)) and lab.origin_healthy(role), 300), \
+        f"the {role} never came up and reported in"
 
 
 @when('the "{role}" box is destroyed')
@@ -110,11 +123,7 @@ def step_kill_box(context, role):
 @when("every box is destroyed")
 def step_kill_all(context):
     lab.kill_boxes()
-    names = subprocess.run(["docker", "ps", "-a", "--format", "{{.Names}}"],
-                           capture_output=True, text=True).stdout.split()
-    backups = [n for n in names if n.endswith("-backup")]
-    if backups:
-        lab.docker("rm", "-f", *backups)
+    lab.kill_backups()
 
 
 @then('the apex serves the "{role}" within {seconds:d} seconds')

@@ -10,6 +10,13 @@ import {
 
 export const STALE_MS = 15 * 60 * 1000
 
+// The default is the only value production uses. The lab shortens it so the
+// sweep can be tested against a real provider in a minute instead of fifteen.
+const staleMs = (env) => {
+  const n = Number(env?.STALE_MS)
+  return Number.isFinite(n) && n > 0 ? n : STALE_MS
+}
+
 const IPV4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/
 export const isIpv4 = (s) => typeof s === 'string' && IPV4.test(s)
 
@@ -19,7 +26,7 @@ function mins(ms) {
 }
 
 export async function startColdStart(env, opts) {
-  const { provider, role = 'primary', shadow = false, messageId = null, now = Date.now() } = opts
+  const { provider, role = 'primary', shadow = false, messageId = null, image = null, now = Date.now() } = opts
   const driver = driverFor(provider)
   const d = driver.defaults()
   const region = opts.region ?? d.region
@@ -33,14 +40,15 @@ export async function startColdStart(env, opts) {
     callbackUrl: `${env.CONTROL_URL}/im-alive`,
     originHost: shadow ? `shadow.${env.DOMAIN}` : originHost(env, role),
     shadow,
+    image,
   })
 
   const { id, ip } = await driver.provision({ name, region, size, userData, env })
   const job = await putJob(env, {
-    nonce, provider: driver.name, providerId: id, role, shadow, name,
+    nonce, provider: driver.name, providerId: id, role, shadow, name, image,
     region, size, startedAt: now, messageId, state: 'provisioning', bootIp: ip,
   })
-  await audit(env, 'coldstart.started', { provider: driver.name, role, region, size, name, shadow })
+  await audit(env, 'coldstart.started', { provider: driver.name, role, region, size, name, shadow, image })
   return job
 }
 
@@ -116,7 +124,7 @@ export async function handleCallback(env, body, now = Date.now()) {
 export async function sweepStale(env, now = Date.now()) {
   const swept = []
   for (const job of await openJobs(env)) {
-    if (now - job.startedAt < STALE_MS) continue
+    if (now - job.startedAt < staleMs(env)) continue
     await dropJob(env, job.nonce)
     let destroyed = false
     try {
@@ -128,7 +136,7 @@ export async function sweepStale(env, now = Date.now()) {
     await audit(env, 'coldstart.timeout', { provider: job.provider, role: job.role, destroyed })
     await tg.edit(env, job.messageId,
       `❌ ${job.shadow ? 'Shadow test' : `Cold start (${job.role})`} on ${job.provider} ` +
-      `never reported in after 15m.\n${destroyed ? 'Box destroyed.' : '⚠️ Box could NOT be destroyed — check the provider console.'}\n` +
+      `never reported in after ${mins(staleMs(env))}.\n${destroyed ? 'Box destroyed.' : '⚠️ Box could NOT be destroyed — check the provider console.'}\n` +
       `Retry: <code>/cold-start ${job.provider}</code>`)
     swept.push(job.nonce)
   }

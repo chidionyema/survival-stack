@@ -24,6 +24,8 @@ WORKER = os.environ.get("LAB_WORKER", "http://127.0.0.1:8799")
 EDGE = os.environ.get("LAB_EDGE", "http://127.0.0.1:8080")
 SHIM = os.environ.get("LAB_SHIM", "http://127.0.0.1:2456")
 ORIGIN_P1 = os.environ.get("LAB_ORIGIN_P1", "http://127.0.0.1:3001")
+ORIGIN_P2 = os.environ.get("LAB_ORIGIN_P2", "http://127.0.0.1:3002")
+ORIGINS = {"primary": ORIGIN_P1, "standby": ORIGIN_P2}
 
 # A published RFC 6238 test vector, not a secret. The real one lives in Worker
 # Secrets and never reaches this machine.
@@ -146,3 +148,22 @@ def lab_up(timeout: int = 900) -> None:
                        stdout=fh, stderr=subprocess.STDOUT, timeout=timeout)
     if not worker_up(timeout=10):
         raise AssertionError(f"the lab did not come up — see {log}")
+
+
+def origin_healthy(role: str, timeout: int = 5) -> bool:
+    """The registry says a box reported in once. This says it is answering now.
+
+    A precondition that trusts the control plane's own table is the failure this
+    function exists to stop: a killed container leaves its registration behind.
+    """
+    base = ORIGINS.get(role)
+    if not base:
+        return False
+    return request(f"{base}/health", timeout=timeout)[0] == 200
+
+
+def kill_backups() -> None:
+    names = docker("ps", "-a", "--format", "{{.Names}}").stdout.split()
+    dead = [n for n in names if n.endswith("-backup")]
+    if dead:
+        docker("rm", "-f", *dead)

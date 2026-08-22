@@ -8,7 +8,8 @@ Feature: Cold start from a park bench, with the data
     Given the lab is up
 
   Scenario: every box is gone and a phone brings one back with its data
-    Given a "primary" box is registered and healthy
+    Given no boxes are running
+    And a "primary" box is registered and healthy
     And an order "order-before-disaster" is written to the primary
     And the write has reached object storage
     When every box is destroyed

@@ -50,15 +50,24 @@ async function applyEdge() {
 // ------------------------------------------------------------ docker provider
 const servers = new Map()
 
+// Two failure modes a real provider produces and a happy fake never does: a box
+// that boots but never becomes healthy, and a box that never reports in at all.
+// One boot each, set through /docker/_next, cleared as soon as it is used.
+let nextBoot = {}
+
 function parseUserData(userData) {
   const nonce = userData.match(/[0-9a-f]{64}/)?.[0] ?? null
   const callback = userData.match(/-X POST "([^"]+)"/)?.[1] ?? null
   const role = /ROLE=standby|"role":\\"standby/.test(userData) ? 'standby' : 'primary'
-  return { nonce, callback, role }
+  // The engine service in the compose document decides what runs. A deploy
+  // changes that line and nothing else, so the fake must read it rather than
+  // fall back to its own default -- otherwise a broken deploy still looks green.
+  const image = userData.match(/engine:\n\s+image: (\S+)/)?.[1] ?? ENGINE_IMAGE
+  return { nonce, callback, role, image }
 }
 
 async function bootBox(id, name, userData) {
-  const { nonce, callback, role } = parseUserData(userData)
+  const { nonce, callback, role, image } = parseUserData(userData)
   const vol = `${name}-data`
   try {
     await run('docker', ['volume', 'create', vol])
@@ -83,7 +92,7 @@ async function bootBox(id, name, userData) {
       '--label', `survival.role=${role}`,
       '-p', `${hostPort}:3000`,
       '-v', `${vol}:/data`, '-e', `ROLE=${role}`, '-e', 'DATABASE_URL=sqlite:///data/app.db',
-      ENGINE_IMAGE])
+      image])
 
     // The backup sidecar rides with the engine, as it does in cloud-init, and
     // only on the primary — the real compose file puts it behind the "primary"
@@ -100,16 +109,19 @@ async function bootBox(id, name, userData) {
     servers.get(id).ip = ip
 
     let health = 'unhealthy'
-    for (let i = 0; i < 60; i++) {
+    const plan = nextBoot; nextBoot = {}
+    for (let i = 0; i < (plan.health === 'bad' ? 0 : 60); i++) {
       try {
         await run('docker', ['exec', name, 'curl', '-fsS', 'http://localhost:3000/health'])
         health = 'ok'
         break
       } catch { await new Promise((r) => setTimeout(r, 2000)) }
     }
-    log(name, 'health', health, ip)
+    log(name, 'health', health, ip, 'image', image)
 
-    if (callback && nonce) {
+    if (plan.deaf) {
+      log(name, 'deaf boot: not reporting in, the sweep should clean this up')
+    } else if (callback && nonce) {
       const res = await fetch(callback, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -165,6 +177,7 @@ createServer(async (req, res) => {
       return json(res, 204, {})
     }
     if (p === '/docker/_servers') return json(res, 200, [...servers.values()])
+    if (p === '/docker/_next' && req.method === 'POST') { nextBoot = body; return json(res, 200, { next: nextBoot }) }
 
     // ---- cloudflare dns
     if (p.startsWith('/cf/zones/')) {

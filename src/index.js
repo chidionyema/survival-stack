@@ -139,9 +139,12 @@ async function runCommand(env, { cmd, args, code }) {
       try {
         // Blue/green: a new box runs the new image and DNS moves only when it
         // reports healthy. A bad version never touches the box serving traffic.
-        const job = await startColdStart(
-          env, { provider: (await getBoxes(env)).primary?.provider ?? 'hetzner', role: 'primary', messageId },
-          )
+        const job = await startColdStart(env, {
+          provider: (await getBoxes(env)).primary?.provider ?? 'hetzner',
+          role: 'primary',
+          messageId,
+          image,
+        })
         await audit(env, 'deploy.started', { image, provider: job.provider })
         return tg.edit(env, messageId, `⏳ New box on ${job.provider} building ${escapeHtml(version)}. DNS moves only if it comes up healthy.`)
       } catch (err) {

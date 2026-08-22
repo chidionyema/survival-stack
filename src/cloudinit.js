@@ -1,10 +1,11 @@
 // One cloud-init document, every provider. The VM configures itself and then
 // reports in — the control plane never polls it.
 
-export function renderCloudInit(env, { role, nonce, callbackUrl, originHost, shadow = false }) {
+export function renderCloudInit(env, { role, nonce, callbackUrl, originHost, shadow = false, image = null }) {
   const v = {
     DOMAIN: env.DOMAIN,
-    ENGINE_IMAGE: env.ENGINE_IMAGE,
+    // A deploy names the image. Everything else runs whatever is configured.
+    ENGINE_IMAGE: image || env.ENGINE_IMAGE,
     ENGINE_PORT: env.ENGINE_PORT,
     DB_BACKUP_IMAGE: env.DB_BACKUP_IMAGE,
     DB_DATA_PATH: env.DB_DATA_PATH,
