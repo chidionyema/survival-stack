@@ -30,6 +30,42 @@ ok()   { echo "  PASS  $*"; pass=$((pass+1)); }
 bad()  { echo "  FAIL  $*"; fail=$((fail+1)); }
 step() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 
+# One lab, one holder. There is a single set of host ports, one docker label
+# namespace and one lab_default network on this machine. Two runs at once do not
+# collide loudly: they destroy each other's boxes, and the failure that comes out
+# reads as a real defect. Two sessions each spent a cycle chasing exactly that on
+# 2026-08-22, which is why scripts/lab-lease.py exists — and why it is called
+# from here rather than left as a thing a person is supposed to remember.
+#
+# `up` does not take the lease. Bringing the lab up is harmless to share. `test`
+# and `down` take it, because those are the two that destroy boxes.
+#
+# `all` does NOT take it either: it runs `"$0" test`, a second process, which
+# takes the lease itself. Taking it in both would deadlock the script against
+# its own child.
+LEASE=$ROOT/scripts/lab-lease.py
+LAB_HOLDER=${LAB_HOLDER:-$(hostname -s):$$}
+lease_held=0
+
+lease_drop() {
+  [ "$lease_held" = 1 ] || return 0
+  lease_held=0
+  python3 "$LEASE" release --holder "$LAB_HOLDER" >/dev/null 2>&1 || true
+}
+
+lease_take() {
+  if [ ! -f "$LEASE" ]; then
+    echo "no lab lease at $LEASE — this checkout is incomplete, refusing to run" >&2
+    exit 2
+  fi
+  # $$ is this script, so the lease dies with it and a crashed run never wedges
+  # the lab. LAB_WAIT=600 queues behind the holder instead of failing.
+  python3 "$LEASE" acquire --holder "$LAB_HOLDER" --why "$1" \
+      --pid $$ --wait "${LAB_WAIT:-0}" || exit 1
+  lease_held=1
+  trap lease_drop EXIT INT TERM
+}
+
 # A code can only be spent once, by design. Wait for the next window rather
 # than replaying one, which the control plane would refuse — correctly.
 #
@@ -417,12 +453,13 @@ test_h() {
 
 case "${1:-all}" in
   up)   lab_up ;;
-  down) lab_down ;;
-  test) test_a; test_b; test_c; test_d; test_e; test_f; test_g; test_h
+  down) lease_take "dry-run.sh down"; lab_down ;;
+  test) lease_take "dry-run.sh test"
+        test_a; test_b; test_c; test_d; test_e; test_f; test_g; test_h
         printf '\n\033[1m%s passed, %s failed\033[0m\n' "$pass" "$fail"; [ "$fail" -eq 0 ] ;;
-  a) test_a ;; b) test_b ;; c) test_c ;; d) test_d ;;
-  e) test_e ;; f) test_f ;; g) test_g ;; h) test_h ;;
+  a|b|c|d|e|f|g|h) lease_take "dry-run.sh $1"; "test_$1" ;;
   _registered) registered "$2" ;;   # used by wait_for, not by people
   all)  lab_up && "$0" test ;;
-  *) echo "usage: $0 [up|test|down|a|b|c|d|e|f|g|h]"; exit 2 ;;
+  *) echo "usage: $0 [up|test|down|a|b|c|d|e|f|g|h]"
+     echo "       LAB_WAIT=600 $0 test   wait for the lab instead of failing"; exit 2 ;;
 esac
