@@ -13,7 +13,9 @@ import { readFile, writeFile, unlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { promises as dnsp } from 'node:dns'
 import * as check from './checks.mjs'
+import * as zonelib from './zone.mjs'
 import { isLoggedIn } from './checks.mjs'
 import { base32Encode, verifyTotp } from '../../src/totp.js'
 
@@ -34,6 +36,7 @@ const state = {
   login: { running: false, url: null, error: null },
   zones: [],
   zone: null,                // { id, name }
+  migration: null,           // { domain, ns, oldNs, ready } once a move is proved
   recordId: null,
   telegram: { username: null, chatId: null },
   sshKeys: [],
@@ -85,6 +88,7 @@ const publicState = () => ({
   login: state.login,
   zones: state.zones,
   zone: state.zone,
+  migration: state.migration,
   recordId: state.recordId,
   telegram: state.telegram,
   sshKeys: state.sshKeys,
@@ -186,6 +190,69 @@ async function handle(req, res, url, body) {
     if (r.ok) { state.recordId = r.recordId; secrets.DOMAIN = zone.name }
     state.checks.DOMAIN = r
     return json(res, { ...r, state: publicState() })
+  }
+
+  // Moving a domain that is not on Cloudflare yet. The dashboard version of this
+  // is add-a-site, wait for a scan, then check a guessed record list by eye. The
+  // eye is the part that fails, and it fails on mail records, silently, for
+  // about a week before anyone notices the bounces.
+  if (p === '/api/domain/migrate') {
+    res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' })
+    const say = (line, kind = 'step') => res.write(`data: ${JSON.stringify({ kind, line })}\n\n`)
+    const done = (ok, line) => { res.write(`data: ${JSON.stringify({ kind: ok ? 'done' : 'fail', line })}\n\n`); res.end() }
+    const domain = String(url.searchParams.get('domain') || '').trim().toLowerCase()
+    try {
+      if (!/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(domain)) return done(false, 'that does not look like a domain')
+      if (!secrets.CF_API_TOKEN) return done(false, 'paste the Cloudflare token first')
+
+      say(`reading ${domain} from the nameservers answering for it now`)
+      const before = await zonelib.authoritativeServers(domain)
+      say(`  ${before.names.join(', ')}`)
+      const live = (await zonelib.readZone(domain, before.ips))
+        .filter((r) => !(r.type === 'NS' && r.name === domain))
+      for (const r of live) say('  ' + zonelib.key(r).slice(0, 90))
+      if (!live.length) return done(false, 'nothing answered — check the spelling')
+
+      let zone = await zonelib.findZone(secrets.CF_API_TOKEN, domain)
+      if (zone) say(`the zone already exists on Cloudflare (${zone.status})`)
+      else {
+        const acct = (await zonelib.accountId(secrets.CF_API_TOKEN)) || state.account?.id
+        if (!acct) return done(false, 'the token cannot see an account — it needs Account:Read too')
+        say('creating the zone on Cloudflare')
+        zone = await zonelib.createZone(secrets.CF_API_TOKEN, acct, domain)
+        say('  waiting 20s for Cloudflare to run its own scan, as a second opinion')
+        await new Promise((r) => setTimeout(r, 20000))
+      }
+
+      say('writing every record in, all grey-clouded')
+      const w = await zonelib.writeRecords(secrets.CF_API_TOKEN, zone.id, live, (r) =>
+        say(`  ${r.state === 'added' ? '+' : r.state === 'already there' ? '=' : '!'} ${r.type} ${r.name} ${r.state.startsWith('refused') ? r.state : ''}`))
+      if (w.failed.length) return done(false, `${w.failed.length} record(s) refused — not safe to switch`)
+
+      const fresh = await zonelib.findZone(secrets.CF_API_TOKEN, domain)
+      const ns = (fresh.name_servers || []).map((s) => s.toLowerCase()).sort()
+      const newIps = []
+      for (const n of ns) for (const ip of await dnsp.resolve4(n).catch(() => [])) newIps.push(ip)
+
+      say('asking both sets of nameservers the same questions')
+      const d = await zonelib.compare(domain, before.ips, newIps)
+      for (const k of d.missing) say('  MISSING on Cloudflare: ' + k.slice(0, 90), 'bad')
+      if (!d.ready) return done(false, 'not identical yet — do not touch the registrar')
+      say(`  identical, ${d.total} records answer the same on both sides`)
+
+      state.migration = { domain, ns, oldNs: before.names, ready: true }
+      state.zones = [...state.zones.filter((z) => z.name !== domain), { id: zone.id, name: domain }]
+      const apex = await check.findOrCreateApex(secrets.CF_API_TOKEN, zone.id, domain)
+      if (apex.ok) {
+        state.recordId = apex.recordId
+        secrets.DOMAIN = domain
+        state.zone = { id: zone.id, name: domain }
+        state.checks.DOMAIN = apex
+      }
+      return done(true, `done — now set the nameservers at your registrar to ${ns.join(' and ')}`)
+    } catch (e) {
+      return done(false, String(e.message || e))
+    }
   }
 
   if (p === '/api/telegram/chat') {

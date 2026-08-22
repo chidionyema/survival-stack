@@ -1,38 +1,55 @@
 # Moving mumchimp.com to Cloudflare
 
-Read section 1 before doing anything. There is one thing in it that would take
-the live shop down, and it is not obvious.
+You do one thing. Paste two nameservers into one form at 123-reg. Everything
+else is a command.
+
+```
+CF_API_TOKEN=... node scripts/migrate-domain.mjs mumchimp.com --watch
+```
+
+Or, if you would rather see it than type it, the setup console has the same
+thing as a box and a button:
+
+```
+open "Set up Survival Stack.command"
+```
 
 ---
 
-## 1. The thing to know first
+## 1. What the command does, in order
 
-**The survival stack rewrites the apex A record.** When you cold-start a box,
-`src/dns.js:27` sends Cloudflare a PATCH that replaces whatever
-`mumchimp.com` points at with the new box's IP address.
+1. **Reads the zone from the nameservers answering for it right now.** Not from
+   a cache, not from a resolver — from `ns03` and `ns04.domaincontrol.com`
+   themselves. It sweeps 41 names against 8 record types, and the name list
+   includes every DKIM selector the common mail providers use.
+2. **Creates the zone on Cloudflare** through the API. No dashboard.
+3. **Waits 20 seconds for Cloudflare's own scan** and compares its findings to
+   the sweep. Neither method can list a zone it cannot transfer — both are
+   guessing names — so two guessers that agree is the closest thing to a real
+   listing you can get. Anything only one of them found is printed and kept.
+4. **Writes every record in, grey-clouded.** Nothing is proxied. Today nothing
+   is proxied, and turning proxying on during a migration changes how traffic
+   reaches the origin and how TLS terminates on the same day, leaving two
+   changes to untangle if anything breaks.
+5. **Asks both sets of nameservers the same questions** and compares the
+   answers. If one record differs it prints `NOT READY` and stops.
+6. **Prints the two Cloudflare nameservers** — only then.
+7. With `--watch`, **waits for the registrar change to land** and says so.
 
-Right now `mumchimp.com` points at `66.241.124.37`, which is the live shop
-running on Fly. So:
+Step 5 is the whole point. A migration that goes wrong does not crash. The site
+loads, the dashboard is green, and an MX or a DKIM record never came across.
+Nothing tells you. You find out from a customer a week later asking why nobody
+replied.
 
-**Moving the DNS to Cloudflare is safe.** Nothing changes for anyone. Cloudflare
-serves exactly the same answers GoDaddy is serving today.
-
-**Pointing the survival stack at mumchimp.com is not a test.** The first
-`/cold-start` takes the live shop off Fly and puts it on a brand new empty box.
-
-Those are two separate decisions. Do the first one now if you want. Do not do
-the second one until the stack is what you actually want serving mumchimp.
-
-If you only want to try the setup console end to end, use a domain that is not
-serving anything. A spare domain costs about ten pounds, and the survival stack
-can then break it as much as it likes.
+`test/domain-migration.test.js` holds that rule as a property: remove any single
+record from the copy and `ready` must go false. All 6 of the zone's records,
+one at a time.
 
 ---
 
 ## 2. What is live today
 
-Captured 2026-08-22 from `ns03.domaincontrol.com`, the nameserver actually
-answering for the domain.
+Captured 2026-08-22 from `ns03.domaincontrol.com`, the authoritative server.
 
 ```
 mumchimp.com.                     600  A      66.241.124.37
@@ -42,138 +59,75 @@ mumchimp.com.                     600  TXT    "v=spf1 include:_spf.google.com in
 www.mumchimp.com.                3600  CNAME  prospector-store-web.fly.dev.
 api.mumchimp.com.                3600  CNAME  prospector-store-api.fly.dev.
 _dmarc.mumchimp.com.             3600  TXT    "v=DMARC1; p=quarantine; adkim=r; aspf=r; rua=mailto:support@mumchimp.com;"
-mailjet._domainkey.mumchimp.com.  600  TXT    "k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA6EOsGczeC659SLmqU453GygowbikI3aEKtZ6NkB2i2oiv7Az23uvKpIHpyQC2OVmVhjZ1tvB/1BpJUgat61upWUPINJU43Sd+FL4cMp9cqXotvKGcy9+IYQ5fwZPsBCss+HNnviH1WyP2R4t8EXHdof9/HxXMB5+zWAv7HIwpGITuKb/dAg2iM/nU5pVPUbCijOokygZMcSZelKlDkG1p0BxDYOqL1xgMmhE3Wg8kX7W+gIJq3BmhQOqHMDMMJZXKjhwAZG4SpuO5UaETF41NILl/0ipT/sf4E8TjGNtdS3OMTRlWZsh0uHLQY7oPYQf/jaKFdnR4WU8S18mVNC3+QIDAQAB"
+mailjet._domainkey.mumchimp.com.  600  TXT    "k=rsa; p=MIIBIjANBgkq…"
 ```
 
-No CAA records. No SRV records. **No DNSSEC** — checked, and that matters,
-because a signed domain cannot change nameservers without removing the DS
-record at the registrar first and waiting. This one has no such step.
+No CAA. No SRV. **No DS record and no RRSIG — DNSSEC is off**, which is the one
+thing that would have blocked a nameserver change outright.
 
-Four of those eight records are mail. Three of them — SPF, DMARC and the
-Mailjet DKIM key — are the ones that break silently. The website going down is
-loud. Mail deliverability quietly degrading over a week is not.
-
-**Two ways of looking say the same thing.** A sweep of thirty-five likely
-subdomain names found exactly `www` and `api`. Certificate transparency logs —
-every hostname that has ever been given an HTTPS certificate — list exactly
-`mumchimp.com`, `www` and `api`. The two agree.
-
-**One gap, and it is worth closing.** Both methods only find records I thought
-to ask about or that were used publicly. The complete list lives in the GoDaddy
-account that holds the zone. Export it before you move, and compare. It is one
-button in their DNS panel.
+Two angles on the subdomain list, and they agree: a 41-name dig sweep and
+certificate transparency (crt.sh) both say `www` and `api`, nothing else.
 
 ---
 
 ## 3. Who holds what
 
-This is confusing and has caught us before, so it is written down.
+| | |
+|---|---|
+| Registrar | **123-Reg Limited**, expiry 2027-06-16 |
+| DNS host | GoDaddy (`ns03`/`ns04.domaincontrol.com`) |
+| Where nameservers change | **123-reg only** |
 
-**The domain is registered at 123-reg.** Not GoDaddy. `whois` says
-`Registrar: 123-Reg Limited`, renewal `2027-06-16`.
+123-reg and GoDaddy are the same company now, which is why the nameservers say
+GoDaddy while the registration says 123-reg. It changes nothing: the nameserver
+field lives at 123-reg.
 
-**The DNS is hosted at GoDaddy.** The nameservers are `ns03.domaincontrol.com`
-and `ns04.domaincontrol.com`, which are GoDaddy's.
-
-So the records live in a GoDaddy account, but **the nameservers can only be
-changed at 123-reg**. Looking at the NS records and going to GoDaddy to change
-them is the wrong move and it will not work.
+**123-reg has no public API for a retail account.** Their own DNS management
+guide documents the control panel and nothing else. So that one paste is the
+floor, and no amount of scripting removes it. The alternative is transferring
+the domain to Cloudflare Registrar, which costs money and is a transfer rather
+than a setting — your call, not mine, and not part of this.
 
 ---
 
-## 4. The move
+## 4. The one manual step
 
-### Step 1 — add the zone to Cloudflare
+`https://www.123-reg.co.uk/secure/cpanel/domain/mumchimp.com/manage-nameservers`
 
-Log in to Cloudflare, Add a site, type `mumchimp.com`, pick the Free plan.
+Replace the two nameservers with the two the command printed. Nothing else on
+that page.
 
-Cloudflare scans the existing DNS and imports what it can find. It is good but
-not complete, which is what step 2 is for.
-
-### Step 2 — check every record came across
-
-Compare the list Cloudflare shows against section 2 above. Add anything
-missing by hand.
-
-**Set every record to DNS only — the grey cloud, not the orange one.** A
-proxied record changes how traffic reaches Fly and how TLS is terminated. Today
-nothing is proxied, so import it that way and change nothing else at the same
-time. Turning the orange cloud on is a separate decision for a separate day.
-
-### Step 3 — prove it, before you move anything
-
-Cloudflare will have given you two nameservers, something like
-`kate.ns.cloudflare.com`. They are already answering for your zone even though
-nobody is asking them yet. So ask them:
-
-```bash
-scripts/dns-diff.sh mumchimp.com ns03.domaincontrol.com kate.ns.cloudflare.com
-```
-
-It asks both nameservers the same eighty-odd questions and prints every
-difference. You want:
-
-```
-Identical. All 20 record(s) on ns03.domaincontrol.com are served the same by kate.ns.cloudflare.com.
-Safe to change the nameservers at the registrar.
-```
-
-If it lists anything as MISSING, that record is being served today and would
-stop being served the moment you switch. Add it in Cloudflare and run the check
-again. Do not move on until it says identical.
-
-### Step 4 — change the nameservers at 123-reg
-
-Log in to **123-reg**, not GoDaddy. Find mumchimp.com, then Manage
-Nameservers. Replace both GoDaddy entries with the two Cloudflare gave you.
-
-Save.
-
-### Step 5 — watch it land
-
-It usually takes minutes. Up to a few hours is normal.
-
-```bash
-dig +short NS mumchimp.com                  # should become the Cloudflare pair
-dig +short MX mumchimp.com                  # should stay: 5 smtp.google.com.
-dig +short TXT mumchimp.com                 # should stay: v=spf1 ...
-curl -sI https://mumchimp.com | head -1     # should stay: HTTP/2 200
-```
-
-Then send yourself an email at your mumchimp address, and send one out from it.
-Mail is the thing that breaks, so mail is the thing to test.
+The command prints them only after both sides answer identically, so at the
+moment you paste, Cloudflare is already serving the same answers GoDaddy is.
+Traffic does not go dark while it propagates — resolvers switch from one correct
+answer to an identical correct answer.
 
 ---
 
 ## 5. Going back
 
-Log in to 123-reg and put the two GoDaddy nameservers back:
-
-```
-ns03.domaincontrol.com
-ns04.domaincontrol.com
-```
-
-The zone is still sitting in the GoDaddy account, untouched. Nothing about this
-migration deletes it. Rollback is the same one field you changed, changed back,
-and it takes the same few minutes.
-
-This is why the migration itself is low risk. The part that is not reversible in
-one field is pointing the survival stack at the apex record, which is section 1.
+Put `ns03.domaincontrol.com` and `ns04.domaincontrol.com` back at 123-reg. That
+is the whole rollback. The GoDaddy zone is untouched by any of this — nothing in
+the command deletes or edits a record on the old side. Propagation is minutes
+to an hour.
 
 ---
 
-## 6. When you do want the stack to run mumchimp
+## 6. The risks, and what holds each one down
 
-Not on day one. The order that does not break anything:
+| Risk | What holds it down |
+|---|---|
+| The shop goes down mid-move | Cloudflare is DNS only. The A, AAAA and CNAME records still point at Fly. Nothing about where the site runs changes. |
+| A record does not come across | Step 5 refuses to print the nameservers unless every record matches. The property test proves it refuses. |
+| Mail breaks | MX, SPF, DMARC and the Mailjet DKIM selector are in the sweep by name, compared like everything else, and the test asserts each one individually. |
+| Cannot roll back | The GoDaddy zone is never written to. Rollback is two strings, five minutes. |
+| The stack takes the shop over | The survival stack rewrites the apex A record on cold start — `src/dns.js:27`. It only does that for the domain in `wrangler.jsonc`. Do not put mumchimp.com there until the shop is meant to move, and that is a separate decision with its own change. |
 
-1. Move the DNS to Cloudflare and leave it alone for a week. Confirm mail is
-   fine.
-2. Run the setup console against a spare domain. Cold-start a box, kill it,
-   watch the failover, restore the database. Break it on purpose.
-3. Get the real shop running on a survival-stack box, reachable at its own
-   address, serving properly.
-4. Only then repoint `mumchimp.com` at it, and let the stack own the record.
+---
 
-Step 4 is the moment the shop stops being on Fly. Everything before it is
-reversible in minutes.
+## 7. When you do want the stack to run mumchimp
+
+Not yet, and not by accident. `src/dns.js:27` PATCHes the apex to the box it
+just started, proxied. Pointing the stack at mumchimp.com means the shop moves
+off Fly onto the survival stack the first time anything cold-starts. That is a
+migration of the business, not of a DNS zone, and it needs its own plan.

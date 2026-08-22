@@ -49,6 +49,10 @@
   .bar span { color:var(--dim); font-size:13.5px; flex:1 }
   #log { max-width:660px; margin:0 auto; font:13px ui-monospace,Menlo,monospace; white-space:pre-wrap }
   #log b { color:var(--ok); font-weight:400 } #log i { color:var(--bad); font-style:normal }
+  .log { max-height:220px; overflow:auto; margin:10px 0 0; padding:10px; background:var(--bg);
+    border:1px solid var(--line); border-radius:8px; font:12px ui-monospace,Menlo,monospace;
+    white-space:pre-wrap; word-break:break-all }
+  .log b { color:var(--ok); font-weight:400 } .log i { color:var(--bad); font-style:normal }
   .hide { display:none }
 </style>
 
@@ -69,13 +73,33 @@
 
   <section class="card" id="c-dns">
     <div class="head"><i class="dot" id="d-dns"></i><span class="t">Your domain</span></div>
-    <p class="why">Paste an API token with <b>Zone:Read</b> and <b>Zone:DNS:Edit</b> —
-      <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank">make one here</a>.
-      Your domains appear below. The apex record is found or created for you.</p>
+    <p class="why">Paste an API token —
+      <a href="https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22zone%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22dns_records%22%2C%22type%22%3A%22edit%22%7D%5D&amp;name=Survival+Stack&amp;accountId=*&amp;zoneId=*"
+        target="_blank">this link makes one with the boxes already ticked</a>.
+      Domains already on Cloudflare appear below. One that is not, type underneath and
+      it gets moved across, records and all.</p>
     <input id="i-CF_API_TOKEN" type="password" placeholder="Cloudflare API token" autocomplete="off">
     <div class="note" id="n-CF_API_TOKEN"></div>
     <select id="s-zone" class="hide"></select>
     <div class="note" id="n-DOMAIN"></div>
+
+    <div id="mig-box" class="hide" style="margin-top:14px;border-top:1px solid var(--line);padding-top:14px">
+      <p class="why">Not on Cloudflare yet? Type it. Nothing at your registrar changes
+        until this says the two sides answer identically.</p>
+      <div style="display:flex;gap:8px">
+        <input id="i-newdomain" placeholder="example.com" autocomplete="off" style="flex:1">
+        <button id="b-migrate" class="ghost">Move it across</button>
+      </div>
+      <pre id="mig-log" class="log hide"></pre>
+      <div class="note" id="n-migrate"></div>
+      <div id="mig-ns" class="hide" style="margin-top:12px;padding:12px;border:1px solid var(--ok);border-radius:8px">
+        <b>Your one step, at your registrar — nowhere else.</b>
+        <p class="why" style="margin:6px 0">Replace the two nameservers with these. Everything
+          already answers the same on both sides, so nothing goes dark while it propagates.</p>
+        <pre id="mig-ns-list" class="log"></pre>
+        <button id="b-copyns" class="ghost">Copy both</button>
+      </div>
+    </div>
   </section>
 
   <section class="card" id="c-totp">
@@ -190,6 +214,14 @@ function paint() {
   }
   if (S.zone) sel.value = S.zone.name
 
+  // The move-a-domain box only appears once the token is real. Offering it before
+  // that just produces an error nobody can act on.
+  $('mig-box').className = c.CF_API_TOKEN?.ok ? '' : 'hide'
+  if (S.migration?.ready) {
+    $('mig-ns').className = ''
+    $('mig-ns-list').textContent = S.migration.ns.join('\n')
+  }
+
   dot('totp', S.totp?.verified ? 'ok' : c.TOTP_SECRET ? 'bad' : '')
   dot('tg', c.TELEGRAM_CHAT_ID?.ok ? 'ok' : c.TELEGRAM_BOT_TOKEN?.ok ? 'wait' : c.TELEGRAM_BOT_TOKEN ? 'bad' : '')
   $('b-chat').disabled = !c.TELEGRAM_BOT_TOKEN?.ok
@@ -247,6 +279,32 @@ $('s-zone').onchange = async (e) => {
   setNote('DOMAIN', { note: 'looking up the apex record…' })
   const r = await api('/api/cf/zone', { zone: e.target.value })
   S = r.state; setNote('DOMAIN', r); paint()
+}
+$('b-migrate').onclick = () => {
+  const domain = $('i-newdomain').value.trim().toLowerCase()
+  if (!domain) return
+  $('b-migrate').disabled = true
+  $('mig-log').className = 'log'
+  $('mig-log').textContent = ''
+  setNote('migrate', { note: 'reading the domain as it stands right now…' })
+  const es = new EventSource('/api/domain/migrate?t=' + T + '&domain=' + encodeURIComponent(domain))
+  es.onmessage = async (e) => {
+    const m = JSON.parse(e.data)
+    const tag = m.kind === 'bad' || m.kind === 'fail' ? 'i' : m.kind === 'done' ? 'b' : 'span'
+    $('mig-log').insertAdjacentHTML('beforeend', `<${tag}>${m.line}</${tag}>\n`)
+    $('mig-log').scrollTop = $('mig-log').scrollHeight
+    if (m.kind === 'done' || m.kind === 'fail') {
+      es.close()
+      $('b-migrate').disabled = false
+      setNote('migrate', { ok: m.kind === 'done', note: m.line })
+      await load()
+    }
+  }
+}
+$('b-copyns').onclick = () => {
+  navigator.clipboard.writeText($('mig-ns-list').textContent)
+  $('b-copyns').textContent = 'Copied'
+  setTimeout(() => { $('b-copyns').textContent = 'Copy both' }, 1500)
 }
 $('s-ssh').onchange = (e) => api('/api/var', { name: 'SSH_KEY_NAME', value: e.target.value })
 $('b-manual').onclick = async () => {

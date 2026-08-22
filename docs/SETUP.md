@@ -56,11 +56,16 @@ You can fetch them as you go, but having them open in tabs makes it one sitting.
 Cloudflare yet, do that first. It is free and it is the one thing setup cannot
 do for you.
 
-**A Cloudflare API token.** Go to
-[dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens),
-press Create Token, then Create Custom Token. Give it two permissions:
-**Zone → Zone → Read** and **Zone → DNS → Edit**. Under Zone Resources pick your
-domain. Copy the token when it shows it to you. It is shown once.
+**A Cloudflare API token.** One click:
+[this link opens the token form with the right boxes already
+ticked](https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22zone%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22dns_records%22%2C%22type%22%3A%22edit%22%7D%5D&name=Survival+Stack&accountId=*&zoneId=*).
+Press Continue, then Create. Copy the token. It is shown once.
+
+If you would rather tick them yourself: Create Token → Create Custom Token, then
+**Zone → Zone → Edit** and **Zone → DNS → Edit**, with Zone Resources set to All
+zones. Edit rather than Read on the first one, because that is what lets the
+setup page add a domain to Cloudflare for you instead of asking you to do it in
+the dashboard.
 
 **A Telegram bot.** Open Telegram, search for
 [@BotFather](https://t.me/BotFather), send it `/newbot`, and answer its two
@@ -148,6 +153,22 @@ correct — the first server you build overwrites it.
 
 This is the step that used to ask you for a zone id and a DNS record id. You do
 not need either. The page reads them off your account.
+
+**If your domain is not on Cloudflare yet**, a second box appears underneath.
+Type the domain and press "Move it across". The page then, without you opening
+anything:
+
+- reads the domain's records from whichever nameservers answer for it today
+- creates the zone on Cloudflare
+- writes every record in
+- asks both sets of nameservers the same questions and compares the answers
+
+If a single record does not match it stops and says so. If they all match it
+shows you two nameservers and a Copy button. Paste those into your registrar —
+that is the only part nobody can automate, because most registrars have no API.
+
+At the moment you paste, Cloudflare is already giving the same answers your old
+nameservers are. Nothing goes dark while it propagates.
 
 ### Your phone
 
@@ -269,10 +290,19 @@ Some things you might see:
 
 **"Cloudflare rejected this token".** The token is wrong, or it is missing a
 permission, or it does not cover the right domain. Make a new one with
-Zone → Zone → Read and Zone → DNS → Edit.
+Zone → Zone → Edit and Zone → DNS → Edit.
 
-**"the token works but cannot read zones".** You made the token but left off
-Zone → Zone → Read. Add it.
+**"the token works but cannot read zones".** You made the token but left off the
+Zone permission. Add it.
+
+**"the token cannot see an account".** Moving a domain across needs to know
+which Cloudflare account to put it in. Add **Account → Account Settings → Read**
+to the token, or set Zone Resources to All zones when you make it.
+
+**"not identical yet — do not touch the registrar".** A record did not come
+across. The lines above it starting `MISSING` name exactly which. Add those by
+hand in the Cloudflare DNS page and press the button again — it is safe to
+re-run, records already there are left alone.
 
 **"no message yet — send your bot anything".** Your message has not reached
 Telegram's servers yet, or you messaged a different bot. Send another and press

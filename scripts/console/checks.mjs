@@ -42,7 +42,9 @@ export async function checkCfToken(token) {
   })
   if (!z.body?.success) return fail('the token works but cannot read zones — add Zone:Read')
   const zones = (z.body.result || []).map((r) => ({ id: r.id, name: r.name }))
-  if (zones.length === 0) return fail('the token works but no zone is in scope for it')
+  // No zones used to be a failure. It is now a starting state: the console can
+  // create the zone itself, so a fresh account with nothing in it is fine.
+  if (zones.length === 0) return pass('valid, no domains on this account yet', { zones })
   return pass(`valid, ${zones.length} zone(s) in scope`, { zones })
 }
 

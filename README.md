@@ -26,6 +26,8 @@ must do, and the five it does not have to.
 | `lighthouse/index.html` | The static page. Loads when every server is ash |
 | `scripts/console/` | The setup console. A page on loopback, not eighteen terminal prompts |
 | `scripts/setup.sh` | Four lines that open it |
+| `scripts/console/zone.mjs` | Moves a domain onto Cloudflare and refuses to say ready unless both nameserver sets answer identically |
+| `scripts/migrate-domain.mjs` | The same thing as one command |
 | `scripts/exit-drill.sh` | Proves you can leave. Run it on a schedule |
 
 Zero runtime dependencies. `wrangler` is a dev tool, not a dependency of the code.
@@ -35,7 +37,7 @@ Zero runtime dependencies. `wrangler` is a dev tool, not a dependency of the cod
 Double-click **Set up Survival Stack.command** in Finder. Or, from anywhere:
 
 ```bash
-npm test          # 48 tests, no network
+npm test          # 55 tests, no network
 npm run secrets   # opens the setup console in your browser
 ```
 
