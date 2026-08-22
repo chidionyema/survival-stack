@@ -16,17 +16,44 @@
 //
 // So the token is unavoidable. What is avoidable is the typing. This module
 // opens the token page with the boxes already ticked, watches the clipboard for
-// the token to appear, checks it against Cloudflare, and puts it in the login
-// keychain. Nothing is typed and nothing is written to a file in plaintext.
+// the token to appear, checks it against Cloudflare, and puts it in whatever
+// secret store the machine has. Nothing is typed and nothing reaches a file in
+// plaintext unless the machine has no secret store at all, which it says.
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { readFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { readFile, writeFile, mkdir, rm } from 'node:fs/promises'
+import { homedir, platform as osPlatform } from 'node:os'
 import { join } from 'node:path'
 
 const run = promisify(execFile)
+// `which` is not everywhere and `command -v` is a shell builtin, so this asks a
+// shell. On Windows there is no shell to ask, so it asks `where` instead.
+const has = async (cmd) => {
+  if (osPlatform() === 'win32') return !!(await run('where', [cmd]).catch(() => null))
+  return !!(await run('/bin/sh', ['-c', `command -v ${JSON.stringify(cmd)}`]).catch(() => null))
+}
 
-export const SERVICE = 'survival-stack-cloudflare-token'
+// ------------------------------------------------------------------ platform
+
+// WSL is Linux to uname and Windows to the clipboard, so it gets its own name.
+// Everything downstream branches on this one string rather than re-sniffing.
+let cached = null
+export async function platform() {
+  if (cached) return cached
+  if (osPlatform() === 'darwin') return (cached = 'macos')
+  if (osPlatform() === 'win32') return (cached = 'windows')
+  if (osPlatform() === 'linux') {
+    const v = await readFile('/proc/version', 'utf8').catch(() => '')
+    return (cached = /microsoft/i.test(v) ? 'wsl' : 'linux')
+  }
+  return (cached = 'unknown')
+}
+
+// A team can point every machine at one name without editing code. The default
+// is the name this tool has always used, so an existing stored token still
+// resolves after this change.
+export const SERVICE = process.env.CF_TOKEN_SERVICE
+  || 'survival-stack-cloudflare-token' + (process.env.CF_TOKEN_TEAM ? `-${process.env.CF_TOKEN_TEAM}` : '')
 
 // A Cloudflare API token is 40 characters of URL-safe base64. Anything else on
 // the clipboard is somebody's password or a paragraph of text, and is ignored
@@ -39,12 +66,15 @@ export const TOKEN_SHAPE = /^[A-Za-z0-9_-]{40}$/
 // to a third party by a tool that was only trying to be helpful. These prefixes
 // are refused before anything leaves the machine.
 const NOT_OURS = [
-  'sk-', 'sk_', 'pk_', 'rk_',            // OpenAI, Stripe
-  'ghp_', 'gho_', 'ghs_', 'github_pat_', // GitHub
-  'xoxb-', 'xoxp-', 'xapp-',             // Slack
-  'AKIA', 'ASIA',                        // AWS
-  'AIza',                                // Google
-  'hf_', 'glpat-', 'dop_v1_', 'shpat_', 'SG.', 'npm_',
+  'sk-', 'sk_', 'pk_', 'rk_', 'whsec_',        // OpenAI, Stripe
+  'ghp_', 'gho_', 'ghs_', 'ghu_', 'ghr_', 'github_pat_',
+  'xoxb-', 'xoxp-', 'xapp-', 'xoxa-', 'xoxr-', // Slack
+  'AKIA', 'ASIA', 'ABIA', 'ACCA',              // AWS
+  'AIza', 'ya29.',                             // Google
+  'hf_', 'glpat-', 'gldt-', 'dop_v1_', 'doo_v1_', 'dor_v1_',
+  'shpat_', 'shpss_', 'SG.', 'npm_', 'pypi-', 'atlasv1.',
+  'fly_', 'FlyV1', 'lin_api_', 'sntrys_', 'sq0atp-', 'sq0csp-',
+  'EAAC', 'EAAG', 'r8_', 'tvly-', 'nvapi-', 'ntn_', 'secret_',
 ]
 
 export function looksLikeToken(s) {
@@ -60,40 +90,95 @@ export const TOKEN_URL =
   '%7B%22key%22%3A%22dns_records%22%2C%22type%22%3A%22edit%22%7D%5D' +
   '&name=Survival+Stack&accountId=*&zoneId=*'
 
-// ------------------------------------------------------------------- keychain
+// The same page with the permission that lets one token mint others. Offered,
+// never the default: a credential holding it can create a token that does
+// anything the account can do, and it sits in the store between runs.
+export const TOKEN_URL_FULL = TOKEN_URL.replace(
+  '%22dns_records%22%2C%22type%22%3A%22edit%22%7D%5D',
+  '%22dns_records%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22api_tokens%22%2C%22type%22%3A%22edit%22%7D%5D',
+)
 
-// The login keychain, not a dotfile. A token in ~/.cf-token is readable by
-// anything that can read the home directory, survives in backups, and shows up
-// in a `cat` somebody pastes into a chat window. The keychain is locked with
-// the login password and does not appear in a directory listing.
+// -------------------------------------------------------------- secret store
+
+const FILE_DIR = join(homedir(), '.config', 'survival-stack')
+const FILE_PATH = join(FILE_DIR, SERVICE)
+
+// Where a token can be kept on this machine, best first. `plaintext` is last
+// and says so out loud every time it is used — a file is not a secret store,
+// it is the absence of one.
+export async function secretStore() {
+  const p = await platform()
+  if (p === 'macos') return { kind: 'keychain', name: 'your login keychain', secure: true }
+  if ((p === 'linux' || p === 'wsl') && (await has('secret-tool'))) {
+    return { kind: 'secret-tool', name: 'the GNOME keyring', secure: true }
+  }
+  return {
+    kind: 'plaintext',
+    name: `${FILE_PATH} (mode 0600)`,
+    secure: false,
+    hint: p === 'linux' || p === 'wsl'
+      ? 'install libsecret-tools (apt) or libsecret (dnf/pacman) and re-run to use the keyring instead'
+      : 'this platform has no secret store this tool can drive',
+  }
+}
+
 export async function keychainGet() {
-  const r = await run('/usr/bin/security', ['find-generic-password', '-s', SERVICE, '-w']).catch(() => null)
-  return r?.stdout?.trim() || null
+  const s = await secretStore()
+  if (s.kind === 'keychain') {
+    const r = await run('/usr/bin/security', ['find-generic-password', '-s', SERVICE, '-w']).catch(() => null)
+    return r?.stdout?.trim() || null
+  }
+  if (s.kind === 'secret-tool') {
+    const r = await run('secret-tool', ['lookup', 'service', SERVICE]).catch(() => null)
+    return r?.stdout?.trim() || null
+  }
+  const v = await readFile(FILE_PATH, 'utf8').catch(() => null)
+  return v?.trim() || null
 }
 
 export async function keychainSet(token) {
-  // -U updates in place rather than erroring on a second run. The value goes in
-  // as an argument to `security`, which is visible in ps for the moment it runs
-  // — so it is passed on stdin via -w with no value instead.
-  await run('/usr/bin/security', [
-    'add-generic-password', '-s', SERVICE, '-a', process.env.USER || 'me', '-U', '-w', token,
-  ])
+  const s = await secretStore()
+  if (s.kind === 'keychain') {
+    // The value goes in on stdin, not as an argument. `security ... -w SECRET`
+    // puts the token in the process argument list, where any user on the box
+    // can read it out of `ps` for as long as the command runs — measured, three
+    // matching lines. With -w and no value it prompts twice, so it is fed twice.
+    await feed('/usr/bin/security',
+      ['add-generic-password', '-s', SERVICE, '-a', process.env.USER || 'me', '-U', '-w'],
+      `${token}\n${token}\n`)
+  } else if (s.kind === 'secret-tool') {
+    await feed('secret-tool', ['store', '--label=Cloudflare API token', 'service', SERVICE], token)
+  } else {
+    await mkdir(FILE_DIR, { recursive: true, mode: 0o700 })
+    await writeFile(FILE_PATH, token + '\n', { mode: 0o600 })
+  }
+  return s
 }
 
 export async function keychainClear() {
-  await run('/usr/bin/security', ['delete-generic-password', '-s', SERVICE]).catch(() => null)
+  const s = await secretStore()
+  if (s.kind === 'keychain') await run('/usr/bin/security', ['delete-generic-password', '-s', SERVICE]).catch(() => null)
+  else if (s.kind === 'secret-tool') await run('secret-tool', ['clear', 'service', SERVICE]).catch(() => null)
+  else await rm(FILE_PATH, { force: true })
+}
+
+function feed(cmd, args, stdin) {
+  return new Promise((resolve, reject) => {
+    const p = execFile(cmd, args, (err) => (err ? reject(err) : resolve()))
+    p.stdin.end(stdin)
+  })
 }
 
 // ------------------------------------------------------------------ discovery
 
 // In order of how deliberate each one is. An environment variable is somebody
-// saying "use this one, now". The keychain is what this tool stored last time.
+// saying "use this one, now". The store is what this tool kept last time.
 export async function findToken() {
   if (process.env.CF_API_TOKEN) return { token: process.env.CF_API_TOKEN, from: 'CF_API_TOKEN' }
   if (process.env.CLOUDFLARE_API_TOKEN) return { token: process.env.CLOUDFLARE_API_TOKEN, from: 'CLOUDFLARE_API_TOKEN' }
 
   const kc = await keychainGet()
-  if (kc) return { token: kc, from: 'your login keychain' }
+  if (kc) return { token: kc, from: (await secretStore()).name }
 
   // Kept only because earlier versions of this documented it. Read, never written.
   for (const f of [join(process.cwd(), '.cf-token'), join(homedir(), '.cf-token')]) {
@@ -114,9 +199,41 @@ export async function wranglerLoggedIn(wranglerPath) {
 
 // ------------------------------------------------------------------ clipboard
 
+// One reader per platform. Returned rather than run so a pre-flight check can
+// say which tool is missing and how to get it, before anything starts waiting.
+export async function clipboardReader() {
+  const p = await platform()
+  if (p === 'macos') return { cmd: '/usr/bin/pbpaste', args: [] }
+  if (p === 'wsl' || p === 'windows') {
+    const exe = p === 'wsl' ? 'powershell.exe' : 'powershell'
+    if (await has(exe)) return { cmd: exe, args: ['-NoProfile', '-Command', 'Get-Clipboard'], crlf: true }
+    return null
+  }
+  if (process.env.WAYLAND_DISPLAY && (await has('wl-paste'))) return { cmd: 'wl-paste', args: ['--no-newline'] }
+  if (await has('xclip')) return { cmd: 'xclip', args: ['-selection', 'clipboard', '-o'] }
+  if (await has('xsel')) return { cmd: 'xsel', args: ['--clipboard', '--output'] }
+  return null
+}
+
+// What to type to get one, per package manager actually present. Returned as a
+// command so the caller can offer to run it rather than printing a wiki page.
+export async function clipboardInstall() {
+  if ((await platform()) !== 'linux') return null
+  const wayland = !!process.env.WAYLAND_DISPLAY
+  const pkg = wayland ? { apt: 'wl-clipboard', dnf: 'wl-clipboard', pacman: 'wl-clipboard' }
+    : { apt: 'xclip', dnf: 'xclip', pacman: 'xclip' }
+  if (await has('apt-get')) return `sudo apt-get install -y ${pkg.apt}`
+  if (await has('dnf')) return `sudo dnf install -y ${pkg.dnf}`
+  if (await has('pacman')) return `sudo pacman -S --noconfirm ${pkg.pacman}`
+  return null
+}
+
 export async function clipboard() {
-  const r = await run('/usr/bin/pbpaste').catch(() => null)
-  return r?.stdout ?? ''
+  const r = await clipboardReader()
+  if (!r) return ''
+  const out = await run(r.cmd, r.args).catch(() => null)
+  if (!out) return ''
+  return r.crlf ? out.stdout.replace(/\r/g, '') : out.stdout
 }
 
 // Waits for a token to appear on the clipboard, checks it is real, and returns
@@ -141,8 +258,17 @@ export async function waitForTokenOnClipboard({ seconds = 300, onTick = () => {}
   return { token: null }
 }
 
-export function openBrowser(url) {
-  return run('/usr/bin/open', [url]).catch(() => null)
+export async function openBrowser(url) {
+  const p = await platform()
+  const tries = p === 'macos' ? [['/usr/bin/open', [url]]]
+    : p === 'wsl' ? [['wslview', [url]], ['cmd.exe', ['/c', 'start', '', url]]]
+      : p === 'windows' ? [['cmd', ['/c', 'start', '', url]]]
+        : [['xdg-open', [url]], ['gio', ['open', url]], ['sensible-browser', [url]]]
+  for (const [cmd, args] of tries) {
+    const ok = await run(cmd, args).then(() => true).catch(() => false)
+    if (ok) return true
+  }
+  return false
 }
 
 // ------------------------------------------------------- tokens minting tokens
@@ -154,21 +280,28 @@ export function openBrowser(url) {
 //
 // The stored credential stays where it is. Each run mints a token that expires
 // in an hour and is deleted the moment the work finishes, so the credential
-// actually in flight is short-lived even though the one in the keychain is not.
+// actually in flight is short-lived even though the one in the store is not.
 //
 // It is attempted, never required. A credential without that permission does
 // the job directly, and nothing about the run changes except this one line.
 
 const API = 'https://api.cloudflare.com/client/v4'
 
+// A network failure is not a bad token, and neither is a DNS outage on a train.
+// Both come back as `ok: false` so the caller reports "cannot reach Cloudflare"
+// rather than throwing a stack trace at somebody setting up their laptop.
 async function api(token, path, opts = {}) {
-  const r = await fetch(API + path, {
-    ...opts,
-    signal: AbortSignal.timeout(25000),
-    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', ...(opts.headers || {}) },
-  })
-  const body = await r.json().catch(() => ({}))
-  return { ok: r.ok && body.success !== false, body }
+  try {
+    const r = await fetch(API + path, {
+      ...opts,
+      signal: AbortSignal.timeout(25000),
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', ...(opts.headers || {}) },
+    })
+    const body = await r.json().catch(() => ({}))
+    return { ok: r.ok && body.success !== false, body }
+  } catch (e) {
+    return { ok: false, body: {}, offline: true, error: String(e.message || e) }
+  }
 }
 
 // The permission group ids are UUIDs and they are not stable enough to paste
@@ -216,4 +349,35 @@ export async function mintEphemeral(token, accountId, { hours = 1 } = {}) {
 export async function revokeToken(rootToken, tokenId) {
   const r = await api(rootToken, `/user/tokens/${tokenId}`, { method: 'DELETE' })
   return r.ok
+}
+
+// --------------------------------------------------------------- what it can do
+
+// Grading a token by asking Cloudflare what it can do, not by reading the name
+// off a listing. `GET /user/tokens` returns every token on the account, so
+// grepping it for "dns_records" answers a question about somebody else's token.
+//
+// Two of the three answers are proofs and one cannot be:
+//   valid   — /user/tokens/verify says so
+//   canMint — it minted a token and the token was deleted again
+//   zone edit — unprovable without creating a zone, so it is not claimed here
+export async function capability(token) {
+  const v = await api(token, '/user/tokens/verify')
+  if (!v.ok) return { valid: false, canMint: false, accountId: null, zones: null, offline: !!v.offline }
+
+  const acc = await api(token, '/accounts?per_page=1')
+  const accountId = acc.ok ? acc.body.result?.[0]?.id || null : null
+
+  const zr = await api(token, '/zones?per_page=50')
+  const zones = zr.ok ? (zr.body.result || []).map((z) => z.name) : null
+
+  let canMint = false
+  if (accountId) {
+    const probe = await mintEphemeral(token, accountId, { hours: 1 })
+    if (probe) {
+      canMint = true
+      await revokeToken(token, probe.id)
+    }
+  }
+  return { valid: true, canMint, accountId, zones }
 }

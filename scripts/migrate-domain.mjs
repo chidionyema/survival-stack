@@ -57,8 +57,12 @@ async function getToken() {
   say(dim('  if the browser did not open: ' + auth.TOKEN_URL))
   say('')
 
+  // Half an hour, not five minutes. The old window assumed somebody sat at the
+  // terminal watching it count down; in practice the run is started and then
+  // somebody walks to the browser, and a five-minute timeout meant starting
+  // again for no reason.
   const got = await auth.waitForTokenOnClipboard({
-    seconds: 300,
+    seconds: Number(process.env.CF_TOKEN_WAIT || 1800),
     validate: (t) => checkCfToken(t),
     onTick: (msg, left) => {
       if (msg) say(red('  ' + msg))

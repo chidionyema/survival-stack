@@ -56,10 +56,31 @@ You can fetch them as you go, but having them open in tabs makes it one sitting.
 Cloudflare yet, do that first. It is free and it is the one thing setup cannot
 do for you.
 
-**A Cloudflare API token.** You do not have to make this in advance. Run
-`./scripts/migrate.sh yourdomain.com` and it opens the page for you with the
-boxes already ticked, then takes the token off your clipboard when you press
-copy. Nothing to paste, nothing to save.
+**A Cloudflare API token.** You do not have to make this in advance:
+
+```
+./scripts/cf-bootstrap.sh
+```
+
+It checks node is there and new enough, finds a clipboard reader for whatever
+machine you are on — macOS, Linux, WSL or Windows — opens the token page with
+the boxes already ticked, and takes the token off the clipboard the moment you
+press copy. Three clicks: Continue to summary, Create Token, the copy button.
+Nothing to paste and nothing to save. Where there is no clipboard tool it asks
+you to paste it instead, and does not echo it.
+
+It then grades the credential by using it rather than by reading its name, and
+stores it in the best secret store the machine has: the login keychain on macOS,
+the GNOME keyring on Linux, and a `0600` file only where there is neither — in
+which case it says so every time.
+
+`./scripts/cf-bootstrap.sh --check` answers "is this machine set up?" without
+opening anything. `--forget` removes it. `--full` also asks for API Tokens: Edit,
+which turns on the one-hour ephemeral tokens described below — read that section
+before granting it. A team can share one store name with `CF_TOKEN_TEAM=acme`.
+
+`./scripts/migrate.sh yourdomain.com` does the same thing on the way past if you
+skip the bootstrap.
 
 If you want it in advance: [this link opens the token form ready to
 go](https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22zone%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22dns_records%22%2C%22type%22%3A%22edit%22%7D%5D&name=Survival+Stack&accountId=*&zoneId=*).
