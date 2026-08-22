@@ -6,3 +6,6 @@ node_modules/
 # lab scratch: logs, the DNS table the shim keeps, the Caddyfile it rewrites
 lab/state/*
 !lab/state/.gitkeep
+.venv/
+.crew/
+__pycache__/
