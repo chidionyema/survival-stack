@@ -4,7 +4,9 @@ Run on 2026-08-22 on the founder's laptop. Total spend: nothing.
 The Worker under test is the production one, running in `workerd` under
 `wrangler dev`. Only the world around it is faked.
 
-Reproduce with `scripts/dry-run.sh`, then `scripts/dry-run.sh down`.
+Reproduce with `scripts/dry-run.sh`, then `scripts/dry-run.sh down`. The run
+below is one uninterrupted pass, exit code 0. Eight scenarios, 41 assertions.
+The unit suite is separate and stands at 39 of 39 (`npm test`).
 
 ```
 TEST A — failover: the standby takes over
@@ -21,15 +23,16 @@ TEST A — failover: the standby takes over
 TEST B — cold start from a park bench, with the data
   making sure there is a primary to lose
   writing an order to it so there is something to lose
+  PASS  the order was written before the disaster (4 -> 5)
   waiting for litestream to push the write to object storage
   destroying every box
   /cold-start docker, from Telegram, with a TOTP code
   PASS  a new box came up and reported in
-  PASS  the restored database carried 1 order(s) across
+  PASS  the restored database carried 5 order(s) across, none lost (had 5)
 
 TEST C — every box gone, the shop stays open
   PASS  the catalog still renders from R2
-  PASS  an order was still taken: {"ok":true,"id":"99836041-5df9-4df6-818c-e8f499eb6876","message":"Order received
+  PASS  an order was still taken: {"ok":true,"id":"849d02d8-cd53-492c-b051-bf419c236205","message":"Order received
   PASS  the queued order is in the audit log
 
 TEST D — swap the database, the stack does not notice
@@ -67,7 +70,8 @@ TEST G — a box that never reports in is swept, not left billing
   PASS  the stale job is gone
   PASS  the timeout is in the audit log
   PASS  the founder was told, without asking
-  FAIL  the provider is still holding the dead box
+  PASS  the sweep says it destroyed the box at the provider
+  PASS  the provider holds no more boxes than before the dead one (7)
 
 TEST H — the refusals: no fingerprint, no action
   a wrong code
@@ -84,9 +88,7 @@ TEST H — the refusals: no fingerprint, no action
   the destroy path, with a real code
   PASS  a destroy with a valid code is carried out
 
-38
-
-passed, 1 failed
+41 passed, 0 failed
 ```
 
 ## What this does not prove
@@ -94,3 +96,18 @@ passed, 1 failed
 Real VM boot time, provider API quirks, real DNS propagation, Let's Encrypt
 issuance and live Stripe. Those need money and a real Monday. `TASK.md` is that
 week, with the command that proves each purchase.
+
+Two more gaps worth naming, because a green run hides them.
+
+**Postgres is proved in pieces, not end to end.** Test D builds the sidecar,
+proves both its modes, and proves the same engine image serves on postgres. It
+does not boot a postgres box from the generated cloud-init. That document now
+renders a `postgres:16-alpine` service with the restore ordered ahead of it
+(`test/incident-db-selection.test.js`), which is a unit-level proof, not a
+running one.
+
+**The degraded-mode queue is written and never drained.** Test C proves an
+order is taken while every box is gone. Nothing yet picks those objects back up
+— that is requirement 8 in `docs/ENGINE_CONTRACT.md` and it belongs to the real
+engine, which does not exist. Until it does, degraded mode takes the order and
+nobody fulfils it.

@@ -130,6 +130,15 @@ proxied record. If `p1` and `p2` are orange, failover silently never happens and
 everything looks fine until the night it matters. Grey them and prove it with
 `dig`.
 
+**The degraded queue never gets drained.** When both boxes are gone the Worker
+takes orders and writes them to `orders/queued/` in R2. Nothing picks them up.
+The placeholder engine does not, and neither will yours until you build it —
+requirement 8 in `docs/ENGINE_CONTRACT.md` has the key format and the two rules
+(idempotent by the order's own id, delete only after the order is committed).
+Until that exists, degraded mode is a promise to the customer that nobody keeps.
+Check it with `wrangler r2 object list survival-data --prefix orders/queued/`
+the morning after any outage.
+
 **The restore is empty and nobody notices.** A cold start that comes up healthy
 with zero orders looks identical to a cold start that worked, unless you write a
 row first and count it afterwards. Test B is written that way for this reason.

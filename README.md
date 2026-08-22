@@ -9,6 +9,10 @@ Specs: [`docs/SURVIVAL_STACK_v5.0.md`](docs/SURVIVAL_STACK_v5.0.md) (original) a
 [`docs/SURVIVAL_STACK_v5.1_CORRECTION.md`](docs/SURVIVAL_STACK_v5.1_CORRECTION.md)
 (the vault-less correction this code implements).
 
+Swapping in your own engine container:
+[`docs/ENGINE_CONTRACT.md`](docs/ENGINE_CONTRACT.md) — the nine things an image
+must do, and the five it does not have to.
+
 ## What is here
 
 | Path | What it is |
@@ -29,7 +33,7 @@ Zero runtime dependencies. `wrangler` is a dev tool, not a dependency of the cod
 
 ```bash
 npm install
-npm test          # 27 tests, no network
+npm test          # 39 tests, no network
 npm run secrets   # the wizard: logins, stores, deploys, points Telegram at it
 ```
 
@@ -98,12 +102,13 @@ example tests of orchestration.
   placeholder, puts secrets only in the `0600` file
 - **Incident** — a bad base32 secret refuses rather than authenticating; a
   degraded-mode order survives the dead-origin attempt that already read the
-  body; a deploy ships the image it named instead of the configured one
+  body; a deploy ships the image it named instead of the configured one; the
+  box is told which database it is running instead of guessing
 
 ```
 $ npm test
-ℹ tests 27
-ℹ pass 27
+ℹ tests 39
+ℹ pass 39
 ℹ fail 0
 ```
 

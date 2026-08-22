@@ -14,6 +14,9 @@ app = Flask(__name__)
 DB_TYPE = os.environ.get("DB_TYPE", "sqlite")
 VERSION = os.environ.get("ENGINE_VERSION", "dry-run-1.0")
 ROLE = os.environ.get("ROLE", "unknown")
+# The box publishes 127.0.0.1:$ENGINE_PORT. Listen anywhere else and the health
+# check never connects, so the cold start times out and the box is destroyed.
+PORT = int(os.environ.get("ENGINE_PORT", "3000"))
 
 SQLITE_PATH = os.environ.get("DATABASE_URL", "sqlite:///data/app.db").replace("sqlite://", "")
 PG_DSN = os.environ.get("DATABASE_URL", "") if DB_TYPE == "postgres" else ""
@@ -83,4 +86,4 @@ def order():
 
 if __name__ == "__main__":
     init()
-    app.run(host="0.0.0.0", port=3000)
+    app.run(host="0.0.0.0", port=PORT)

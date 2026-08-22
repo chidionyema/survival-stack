@@ -90,6 +90,11 @@ secret R2_ACCESS_KEY    "R2 access key id (hidden)"
 secret R2_SECRET_KEY    "R2 secret access key (hidden)"
 secret STRIPE_SECRET_KEY "Stripe live secret key (hidden)"
 secret JWT_SECRET        "App JWT secret (hidden)"
+# Only asked for on postgres. On sqlite the connection string is derived from
+# DB_DATA_PATH and there is no password to hold.
+if grep -q '"DB_TYPE": "postgres"' wrangler.jsonc 2>/dev/null; then
+  secret DB_PASSWORD     "Postgres password for the boxes (hidden)"
+fi
 SSH_KEY=$(ask "SSH key name registered at your providers" "survival")
 printf '%s' "$SSH_KEY" | $WRANGLER secret put SSH_KEY_NAME >/dev/null
 

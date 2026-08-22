@@ -1,12 +1,31 @@
 // One cloud-init document, every provider. The VM configures itself and then
 // reports in — the control plane never polls it.
 
+// The engine is handed one connection string and nothing else. Working it out
+// here, once, is what lets the same image run on either database.
+function databaseUrl(env, dbType) {
+  if (env.DATABASE_URL) return env.DATABASE_URL
+  if (dbType === 'sqlite') return `sqlite://${env.DB_DATA_PATH}/app.db`
+  if (dbType === 'postgres') {
+    // A postgres box with no password would fall back to a local sqlite file.
+    // It would pass its health check and lose every order, so stop here.
+    if (!env.DB_PASSWORD) {
+      throw new Error('cloud-init: DB_TYPE=postgres needs DB_PASSWORD or DATABASE_URL')
+    }
+    return `postgresql://postgres:${env.DB_PASSWORD}@db:5432/app`
+  }
+  throw new Error(`cloud-init: unknown DB_TYPE ${dbType}`)
+}
+
 export function renderCloudInit(env, { role, nonce, callbackUrl, originHost, shadow = false, image = null }) {
+  const dbType = env.DB_TYPE || 'sqlite'
   const v = {
     DOMAIN: env.DOMAIN,
     // A deploy names the image. Everything else runs whatever is configured.
     ENGINE_IMAGE: image || env.ENGINE_IMAGE,
     ENGINE_PORT: env.ENGINE_PORT,
+    DB_TYPE: dbType,
+    DATABASE_URL: databaseUrl(env, dbType),
     DB_BACKUP_IMAGE: env.DB_BACKUP_IMAGE,
     DB_DATA_PATH: env.DB_DATA_PATH,
     R2_BUCKET: env.R2_BUCKET,
@@ -26,6 +45,40 @@ export function renderCloudInit(env, { role, nonce, callbackUrl, originHost, sha
       throw new Error(`cloud-init: missing value for ${k}`)
     }
   }
+
+  const pg = v.DB_TYPE === 'postgres'
+  // The sidecar restores the cluster into DB_DATA_PATH, then postgres starts on
+  // top of it. Nothing else in the file knows which database this is.
+  const dbService = pg ? `
+        db:
+          image: postgres:16-alpine
+          restart: unless-stopped
+          shm_size: 256mb
+          env_file: ./.env
+          environment:
+            PGDATA: ${v.DB_DATA_PATH}
+          depends_on:
+            init:
+              condition: service_completed_successfully
+          volumes:
+            - ${v.DB_DATA_PATH}:${v.DB_DATA_PATH}
+          healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U postgres -d app"]
+            interval: 5s
+            timeout: 5s
+            retries: 24
+` : ''
+  const engineDeps = pg
+    ? `db:
+              condition: service_healthy`
+    : `init:
+              condition: service_completed_successfully`
+  const backupDeps = pg
+    ? `
+          depends_on:
+            db:
+              condition: service_healthy`
+    : ''
 
   return `#cloud-config
 package_update: true
@@ -51,7 +104,11 @@ write_files:
       ORIGIN_HOST=${v.ORIGIN_HOST}
       DOMAIN=${v.DOMAIN}
       ENGINE_PORT=${v.ENGINE_PORT}
-      DB_DATA_PATH=${v.DB_DATA_PATH}
+      DB_TYPE=${v.DB_TYPE}
+      DATABASE_URL=${v.DATABASE_URL}
+      DB_DATA_PATH=${v.DB_DATA_PATH}${pg ? `
+      POSTGRES_PASSWORD=${env.DB_PASSWORD}
+      POSTGRES_DB=app` : ''}
       R2_BUCKET=${v.R2_BUCKET}
       R2_ENDPOINT=${v.R2_ENDPOINT}
       R2_ACCESS_KEY=${v.R2_ACCESS_KEY}
@@ -62,7 +119,7 @@ write_files:
   - path: /opt/survival/compose.yml
     permissions: '0644'
     content: |
-      services:
+      services:${dbService}
         init:
           image: ${v.DB_BACKUP_IMAGE}
           env_file: ./.env
@@ -75,8 +132,7 @@ write_files:
           image: ${v.ENGINE_IMAGE}
           restart: unless-stopped
           depends_on:
-            init:
-              condition: service_completed_successfully
+            ${engineDeps}
           ports:
             - "127.0.0.1:${v.ENGINE_PORT}:${v.ENGINE_PORT}"
           env_file: ./.env
@@ -99,7 +155,7 @@ write_files:
             - caddy_data:/data
         backup:
           image: ${v.DB_BACKUP_IMAGE}
-          restart: unless-stopped
+          restart: unless-stopped${backupDeps}
           env_file: ./.env
           environment:
             MODE: backup

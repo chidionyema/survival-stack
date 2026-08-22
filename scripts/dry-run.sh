@@ -165,9 +165,16 @@ test_b() {
   api "{\"action\":\"cold-start\",\"provider\":\"docker\",\"role\":\"primary\",\"code\":\"$(code)\"}" >/dev/null
   wait_for 240 "curl -sf http://127.0.0.1:3001/health" || { bad "no primary to run the test against"; return; }
 
+  # A fixed order id passes once and then collides with the row the previous
+  # run restored, which reads as a broken restore and is not. Fresh id, and
+  # compare counts rather than asserting a number.
   echo "  writing an order to it so there is something to lose"
-  curl -s -X POST "http://127.0.0.1:3001/api/orders" -H 'content-type: application/json' \
-    -d '{"id":"order-before-disaster"}' >/dev/null
+  local before after
+  before=$(curl -s --max-time 10 http://127.0.0.1:3001/health | node -pe 'JSON.parse(require("fs").readFileSync(0)).orders' 2>/dev/null)
+  after=$(curl -s -X POST "http://127.0.0.1:3001/api/orders" -H 'content-type: application/json' \
+    -d "{\"id\":\"$(uuidgen)\"}" | node -pe 'JSON.parse(require("fs").readFileSync(0)).orders' 2>/dev/null)
+  [ "${after:-0}" -gt "${before:-0}" ] && ok "the order was written before the disaster ($before -> $after)" \
+                                       || { bad "the pre-disaster write did not land ($before -> ${after:-none})"; return; }
   echo "  waiting for litestream to push the write to object storage"
   sleep 15
 
@@ -182,8 +189,8 @@ test_b() {
 
   local orders
   orders=$(curl -s --max-time 10 http://127.0.0.1:3001/health | node -pe 'JSON.parse(require("fs").readFileSync(0)).orders' 2>/dev/null)
-  [ "${orders:-0}" -ge 1 ] && ok "the restored database carried $orders order(s) across" \
-                           || bad "restored box has ${orders:-no} orders — the restore lost data"
+  [ "${orders:-0}" -ge "${after:-1}" ] && ok "the restored database carried $orders order(s) across, none lost (had $after)" \
+                           || bad "restored box has ${orders:-no} orders, had $after — the restore lost data"
 }
 
 test_c() {
