@@ -63,7 +63,9 @@ def step_body_contains(context, needle):
 @when('a Telegram message "{text}" arrives')
 def step_telegram(context, text):
     if "{code}" in text:
-        text = text.replace("{code}", lab.fresh_code())
+        context.status, context.body = lab.with_fresh_code(
+            lambda code: lab.telegram(text.replace("{code}", code)))
+        return
     context.status, context.body = lab.telegram(text)
 
 
@@ -108,8 +110,8 @@ def step_box_up(context, role):
     if lab.boxes().get(role) and lab.origin_healthy(role):
         return
     lab.kill_boxes(role)
-    payload = {"action": "cold-start", "provider": "docker", "role": role, "code": lab.fresh_code()}
-    status, text = lab.action(payload)
+    status, text = lab.with_fresh_code(lambda code: lab.action(
+        {"action": "cold-start", "provider": "docker", "role": role, "code": code}))
     assert status == 200, f"cold-start refused ({status}): {text[:300]}"
     assert lab.wait_for(lambda: bool(lab.boxes().get(role)) and lab.origin_healthy(role), 300), \
         f"the {role} never came up and reported in"
@@ -140,7 +142,8 @@ def step_control_serves(context, role, seconds):
 
 @when("I promote the standby")
 def step_promote(context):
-    status, text = lab.action({"action": "promote", "code": lab.fresh_code()})
+    status, text = lab.with_fresh_code(
+        lambda code: lab.action({"action": "promote", "code": code}))
     assert status == 200, f"promote refused ({status}): {text[:300]}"
 
 
@@ -159,7 +162,8 @@ def step_wait_replication(context):
 
 @when("I cold start from Telegram")
 def step_cold_start_telegram(context):
-    status, text = lab.telegram(f"/cold-start docker {lab.fresh_code()}")
+    status, text = lab.with_fresh_code(
+        lambda code: lab.telegram(f"/cold-start docker {code}"))
     assert status == 200, f"the webhook refused ({status}): {text[:200]}"
 
 

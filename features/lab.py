@@ -32,7 +32,10 @@ ORIGINS = {"primary": ORIGIN_P1, "standby": ORIGIN_P2}
 LAB_TOTP = os.environ.get("LAB_TOTP", "JBSWY3DPEHPK3PXP")
 LAB_HOOK = os.environ.get("LAB_HOOK", "lab-webhook-secret")
 
-_last_code = {"value": None}
+# Which code has been spent is the Worker's state, not this process's. It burns
+# each code in KV, so a second `behave` run starting inside the same 30-second
+# window would replay a dead code. The file carries it across processes.
+_CODE_FILE = ROOT / "lab" / "state" / "last-totp"
 
 
 def totp(secret: str = LAB_TOTP, at: float | None = None) -> str:
@@ -44,16 +47,43 @@ def totp(secret: str = LAB_TOTP, at: float | None = None) -> str:
     return f"{code % 1_000_000:06d}"
 
 
+def _spent() -> str | None:
+    try:
+        return _CODE_FILE.read_text().strip() or None
+    except OSError:
+        return None
+
+
+def _spend(code: str) -> None:
+    _CODE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _CODE_FILE.write_text(code)
+
+
 def fresh_code(timeout: int = 40) -> str:
     """Every code is spent once, by design. Wait for the next window, never replay."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         c = totp()
-        if c != _last_code["value"]:
-            _last_code["value"] = c
+        if c != _spent():
+            _spend(c)
             return c
         time.sleep(2)
     raise AssertionError("no fresh TOTP window inside %ss" % timeout)
+
+
+def with_fresh_code(send, tries: int = 2):
+    """Send an action with a code; if the Worker says it is spent, take the next one.
+
+    The file above only records codes this suite spent. Anything else that talks
+    to the lab — a curl, another run, the Telegram shim — burns codes we never
+    saw, and the only place that truth lives is the Worker's reply.
+    """
+    for attempt in range(tries):
+        status, text = send(fresh_code())
+        if not (status == 401 and "already used" in text):
+            return status, text
+        _spend(totp())  # believe the Worker over the file, then wait it out
+    return status, text
 
 
 def request(url: str, method: str = "GET", body=None, headers=None, timeout: int = 20):
