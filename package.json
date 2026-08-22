@@ -6,6 +6,8 @@
   "description": "Serverless control plane. The vault box is deleted.",
   "scripts": {
     "test": "node --test test/*.test.js",
+    "matrix": "node --test test/migration-phases.test.js",
+    "mock-cf": "node test/helpers/mock-cf-api.mjs",
     "dev": "npx wrangler@latest dev",
     "deploy": "npx wrangler@latest deploy",
     "tail": "npx wrangler@latest tail",

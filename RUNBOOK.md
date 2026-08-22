@@ -22,11 +22,11 @@ remembered, so that nobody runs a command from this file and gets
 | `node scripts/migrate-domain.mjs <domain> [--watch] [--dry-run]` | **yes** — this is the whole tool |
 | `./scripts/cf-bootstrap.sh [--full] [--forget] [--force] [--check]` | **yes** |
 | `whois <domain>` lock check | **yes**, as `registrarLock()` inside the migration |
-| `./scripts/dns-baseline.sh` | **not written** |
-| `--phase=discover\|validate\|prepare\|verify\|cutover\|lockdown` | **not written** — one run does discover → validate → prepare → verify today, and stops before cutover |
-| `--rollback=prepare\|cutover` | **not written** — a zone the run created is deleted automatically when validation fails, and nothing else is undoable yet |
+| `--phase=discover\|validate\|prepare\|verify\|cutover\|lockdown` | **yes**, in `scripts/console/phases.mjs`. With no `--phase` a run does discover → validate → prepare → verify and stops before cutover |
+| `--rollback` | **yes** — it undoes exactly what the run wrote, and refuses to delete a zone it did not create or that has anything else in it |
+| `./scripts/dns-baseline.sh` | **not written, and will not be** — `--phase=discover` writes the baseline into `.migration/<domain>.json`, so a separate script would be a second implementation of it |
 | `./scripts/cf-bootstrap.sh --validate-only` | **not written** — the flag that answers this is `--check` |
-| Section 5 mock API server and failure matrix | **partly** — `test/incident-cf-permissions.test.js` covers the call-order invariants against a stubbed fetch |
+| Section 5 mock API server and failure matrix | **yes** — `test/helpers/mock-cf-api.mjs` is an HTTP server the real tool talks to through `CF_API_BASE`, and `test/migration-phases.test.js` runs 17 scenarios through it |
 
 **`CF_TOKEN=` is not the variable.** The code reads `CF_API_TOKEN`. And a token
 on a command line is readable by every process on the box through `ps` and lands

@@ -326,14 +326,14 @@ export async function openBrowser(url) {
 // It is attempted, never required. A credential without that permission does
 // the job directly, and nothing about the run changes except this one line.
 
-const API = 'https://api.cloudflare.com/client/v4'
+const API_BASE = () => (process.env.CF_API_BASE || 'https://api.cloudflare.com') + '/client/v4'
 
 // A network failure is not a bad token, and neither is a DNS outage on a train.
 // Both come back as `ok: false` so the caller reports "cannot reach Cloudflare"
 // rather than throwing a stack trace at somebody setting up their laptop.
 async function api(token, path, opts = {}) {
   try {
-    const r = await fetch(API + path, {
+    const r = await fetch(API_BASE() + path, {
       ...opts,
       signal: AbortSignal.timeout(25000),
       headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', ...(opts.headers || {}) },

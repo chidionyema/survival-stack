@@ -7,6 +7,8 @@
 // — an account name, a bot username, a key count — never the credential.
 import { createHmac, createHash } from 'node:crypto'
 
+const CF = () => (process.env.CF_API_BASE || 'https://api.cloudflare.com') + '/client/v4'
+
 const UA = { 'user-agent': 'survival-stack-setup' }
 
 // `wrangler whoami` prints "You are not authenticated" and exits 0. Its exit code
@@ -31,13 +33,13 @@ const pass = (note, extra = {}) => ({ ok: true, note, ...extra })
 
 export async function checkCfToken(token) {
   if (!token) return fail('nothing pasted')
-  const v = await json('https://api.cloudflare.com/client/v4/user/tokens/verify', {
+  const v = await json(CF() + '/user/tokens/verify', {
     headers: { authorization: `Bearer ${token}` },
   })
   // Cloudflare answers a malformed token with 400 "Invalid request headers", which
   // reads as a bug in this tool rather than a bad paste. Say what it means.
   if (!v.body?.success) return fail('Cloudflare rejected this token')
-  const z = await json('https://api.cloudflare.com/client/v4/zones?per_page=50', {
+  const z = await json(CF() + '/zones?per_page=50', {
     headers: { authorization: `Bearer ${token}` },
   })
   if (!z.body?.success) return fail('the token works but cannot read zones — add Zone:Read')
@@ -54,7 +56,7 @@ export async function checkCfToken(token) {
 // reserved and routes nowhere. The first cold start overwrites it.
 export async function findOrCreateApex(token, zoneId, domain) {
   const h = { authorization: `Bearer ${token}`, 'content-type': 'application/json' }
-  const base = `https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records`
+  const base = `${CF()}/zones/${zoneId}/dns_records`
   const list = await json(`${base}?type=A&name=${encodeURIComponent(domain)}`, { headers: h })
   if (!list.body?.success) return fail(list.body?.errors?.[0]?.message || 'could not read DNS records')
   const found = list.body.result?.[0]

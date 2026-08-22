@@ -12,7 +12,13 @@
 import { Resolver, promises as dnsp } from 'node:dns'
 import { execFile } from 'node:child_process'
 
-const CF = 'https://api.cloudflare.com/client/v4'
+// CF_API_BASE points the whole tool at the mock server in test/helpers, which
+// is how the failure matrix exercises the real HTTP path - headers, JSON,
+// status codes - instead of a stubbed fetch that agrees with itself.
+// Read per call, not at import. A test points this at the mock server after
+// the module graph is already loaded, and a constant captured at import time
+// would send every one of those calls to the live API instead.
+const CF = () => (process.env.CF_API_BASE || 'https://api.cloudflare.com') + '/client/v4'
 
 // Everything a small business is likely to have, plus every DKIM selector the
 // common mail providers use. A name nobody ever asks about costs one UDP packet.
@@ -29,7 +35,7 @@ const NAMES = ['@', 'www', 'mail', 'smtp', 'imap', 'pop', 'webmail', 'autodiscov
 const TYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'CAA', 'SRV', 'NS']
 
 async function cf(token, path, opts = {}) {
-  const r = await fetch(CF + path, {
+  const r = await fetch(CF() + path, {
     ...opts,
     signal: AbortSignal.timeout(25000),
     headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', ...(opts.headers || {}) },
@@ -142,7 +148,10 @@ export async function dnsReachable(token, zoneId) {
 export async function writeRecords(token, zoneId, records, onEach = () => {}) {
   const existing = await allRecords(token, zoneId)
   const have = new Set(existing.map((r) => key(fromCf(r))))
-  const results = { added: 0, already: 0, skipped: [], failed: [] }
+  // addedIds is what makes a failed prepare undoable: the ids of the records
+  // this run put there, and nothing else. Without it a rollback would have to
+  // guess which records were already somebody's configuration.
+  const results = { added: 0, already: 0, skipped: [], failed: [], addedIds: [] }
 
   for (const rec of records) {
     if (rec.type === 'NS' && rec.name === records.domain) continue
@@ -156,10 +165,18 @@ export async function writeRecords(token, zoneId, records, onEach = () => {}) {
       ...(rec.priority !== undefined ? { priority: rec.priority } : {}),
     }
     const r = await cf(token, `/zones/${zoneId}/dns_records`, { method: 'POST', body: JSON.stringify(body) })
-    if (r.ok) { results.added++; onEach({ ...rec, state: 'added' }) }
+    if (r.ok) { results.added++; results.addedIds.push(r.body.result.id); onEach({ ...rec, state: 'added' }) }
     else { results.failed.push({ ...rec, why: firstError(r.body) }); onEach({ ...rec, state: `refused: ${firstError(r.body)}` }) }
   }
   return results
+}
+
+// Undo one record this run wrote. The rollback path only ever passes ids from
+// writeRecords' own addedIds, so it can never remove a record that was already
+// there before the run started.
+export async function deleteRecord(token, zoneId, recordId) {
+  const r = await cf(token, `/zones/${zoneId}/dns_records/${recordId}`, { method: 'DELETE' })
+  return r.ok
 }
 
 export async function allRecords(token, zoneId) {
@@ -194,6 +211,15 @@ export async function compare(domain, oldIps, newIps) {
     extra: [...b].filter((k) => !a.has(k)).sort(),
     ready: [...a].every((k) => b.has(k)),
   }
+}
+
+// Can this credential list zones at all - as distinct from listing them and
+// finding none. findZone and listZones both flatten a 403 into an empty
+// answer, which reads as "no such zone" and sends you to create one. This is
+// the only call that tells the two apart, so it runs first.
+export async function zoneReadable(token) {
+  const r = await cf(token, '/zones?per_page=1')
+  return r.ok
 }
 
 export async function listZones(token, limit = 5) {
