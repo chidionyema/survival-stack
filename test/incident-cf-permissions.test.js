@@ -106,3 +106,94 @@ test('incident: "Invalid nameservers" was a registrar lock, not a nameserver', a
   assert.equal(unknown.known, false)
   assert.equal(unknown.locked, false, 'unknown must never print the unlock instruction')
 })
+
+// ---------------------------------------------------------- zero side effects
+//
+// Founder, 2026-08-22: "This is not nice debugging." The run created the zone
+// with a token that could not write DNS, then failed on record 1 of 8. These
+// pin the rule that came out of it: the probe runs before the mutation, and a
+// failed run leaves nothing behind.
+
+// Records every call so the ORDER can be asserted, not just the outcome.
+const trace = (routes) => {
+  const seen = []
+  const handler = async (url, opts = {}) => {
+    const path = String(url).replace('https://api.cloudflare.com/client/v4', '')
+    const method = opts.method || 'GET'
+    seen.push(`${method} ${path}`)
+    for (const [match, res] of routes) {
+      if (new RegExp(match).test(`${method} ${path}`)) return res
+    }
+    throw new Error('unexpected ' + method + ' ' + path)
+  }
+  return { seen, handler }
+}
+
+test('incident: a credential that cannot write DNS never gets to create anything', async () => {
+  // Another zone is already in scope, so the question is answerable without
+  // touching anything at all. Nothing may be created, full stop.
+  const { seen, handler } = trace([
+    ['GET /zones\\?name=', reply([])],            // the domain is not there yet
+    ['GET /zones\\?per_page=1$', reply([{ id: 'other-zone' }])],
+    ['GET /zones/other-zone/dns_records', reply(null, false)],
+  ])
+  const out = await withFetch(handler, () => z.ensureZone('t', 'example.com'))
+
+  assert.equal(out.error, 'no-dns')
+  assert.equal(out.rolledBack, false, 'it rolled something back that it never created')
+  assert.equal(seen.some((c) => c.startsWith('POST /zones')), false, 'it created a zone anyway')
+})
+
+test('incident: with nothing to probe, the zone it creates is deleted again on refusal', async () => {
+  const { seen, handler } = trace([
+    ['GET /zones\\?name=', reply([])],
+    ['GET /zones\\?per_page=1$', reply([])],       // no zone anywhere to ask about
+    ['GET /accounts', reply([])],                    // zone-scoped token: 200, empty
+    ['POST /zones$', reply({ id: 'new-zone', status: 'pending' })],
+    ['GET /zones/new-zone/dns_records', reply(null, false)],
+    ['DELETE /zones/new-zone$', reply({ id: 'new-zone' })],
+  ])
+  const out = await withFetch(handler, () => z.ensureZone('t', 'example.com'))
+
+  assert.equal(out.error, 'no-dns')
+  assert.equal(out.rolledBack, true, 'the half-created zone was left behind')
+  assert.ok(seen.includes('DELETE /zones/new-zone'), 'no delete was issued')
+
+  // The order is the guarantee. The probe must sit between the create and any
+  // possibility of a write, and the delete must come after the probe.
+  const created = seen.findIndex((c) => c.startsWith('POST /zones'))
+  const probed = seen.findIndex((c) => c.includes('/dns_records'))
+  const deleted = seen.findIndex((c) => c.startsWith('DELETE /zones'))
+  assert.ok(created < probed && probed < deleted, `wrong order: ${seen.join(' | ')}`)
+})
+
+test("a zone somebody else created is never deleted over a permission", async () => {
+  // The rollback is only ever for a zone this run created. Deleting a
+  // pre-existing one on a permission failure turns a bad run into a lost
+  // configuration, which is worse than the bug it is cleaning up after.
+  const { seen, handler } = trace([
+    ['GET /zones\\?name=', reply([{ id: 'theirs', status: 'active' }])],
+    ['GET /zones/theirs/dns_records', reply(null, false)],
+  ])
+  const out = await withFetch(handler, () => z.ensureZone('t', 'example.com'))
+
+  assert.equal(out.error, 'no-dns')
+  assert.equal(out.rolledBack, false)
+  assert.equal(seen.some((c) => c.startsWith('DELETE')), false, 'it deleted a zone it did not create')
+})
+
+test('the happy path returns a zone it has proved it can write DNS in', async () => {
+  const { seen, handler } = trace([
+    ['GET /zones\\?name=', reply([])],
+    ['GET /zones\\?per_page=1$', reply([])],
+    ['GET /accounts', reply([{ id: 'acct-1' }])],
+    ['POST /zones$', reply({ id: 'new-zone', status: 'pending' })],
+    ['GET /zones/new-zone/dns_records', reply([])],
+  ])
+  const out = await withFetch(handler, () => z.ensureZone('t', 'example.com'))
+
+  assert.equal(out.error, undefined)
+  assert.equal(out.zone.id, 'new-zone')
+  assert.equal(out.fresh, true)
+  assert.equal(seen.some((c) => c.startsWith('DELETE')), false, 'it deleted the zone it just proved')
+})

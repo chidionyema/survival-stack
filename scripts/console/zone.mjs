@@ -196,6 +196,64 @@ export async function compare(domain, oldIps, newIps) {
   }
 }
 
+export async function listZones(token, limit = 5) {
+  const r = await cf(token, `/zones?per_page=${limit}`)
+  return r.ok ? r.body.result || [] : []
+}
+
+// Undo a zone this run created. Only ever called on a zone this run created:
+// a pre-existing zone belongs to somebody else's decision, and deleting one on
+// a permission failure would turn a bad first run into a lost configuration.
+export async function deleteZone(token, zoneId) {
+  const r = await cf(token, `/zones/${zoneId}`, { method: 'DELETE' })
+  return r.ok
+}
+
+// Get a zone to work in, or fail having changed nothing.
+//
+// The incident: a token with Zone:Edit and no DNS permission created the zone,
+// then failed on record 1 of 8 with "Authentication error". The founder was
+// left holding a half-created zone and a message naming no permission.
+// Founder: "This is not nice debugging."
+//
+// The rule that came out of it: the probe runs before the mutation, and a
+// failed run leaves zero side effects. Whether a credential can write DNS is a
+// question about a zone, so there has to be a zone to ask about, and there are
+// three cases:
+//
+//   the zone exists      ask there, change nothing on failure
+//   another zone exists  ask there, change nothing on failure
+//   nothing exists       create this one, ask, delete it again on failure
+//
+// Returns { zone } or { error: 'no-dns', rolledBack }. It never returns a zone
+// it has not proved it can write DNS in.
+export async function ensureZone(token, domain, { log = () => {} } = {}) {
+  const existing = await findZone(token, domain)
+  if (existing) {
+    log('exists', existing)
+    if (!(await dnsReachable(token, existing.id))) return { error: 'no-dns', rolledBack: false }
+    return { zone: existing }
+  }
+
+  // Any zone answers "can this token touch DNS at all", and using one that is
+  // already there means a bad credential costs nothing.
+  const [other] = await listZones(token, 1)
+  if (other && !(await dnsReachable(token, other.id))) return { error: 'no-dns', rolledBack: false }
+
+  const account = await accountId(token)
+  const zone = await createZone(token, account, domain)
+  log('created', zone)
+
+  // Nothing was in scope to ask first, so the new zone is the question, and it
+  // is withdrawn if the answer is no. Only ever this one: a zone somebody else
+  // created is their decision, and deleting it over a permission would turn a
+  // bad first run into a lost configuration.
+  if (!other && !(await dnsReachable(token, zone.id))) {
+    return { error: 'no-dns', rolledBack: await deleteZone(token, zone.id) }
+  }
+  return { zone, fresh: true }
+}
+
 // Whether the registry will accept a nameserver change at all.
 //
 // The incident: the founder was given the two Cloudflare nameservers, pasted

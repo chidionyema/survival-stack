@@ -48,6 +48,12 @@ if (found.token && !force) {
   const can = await auth.capability(found.token)
   if (can.valid) {
     say(grn('  it works.') + dim(` ${can.zones === null ? 'cannot list zones' : `${can.zones.length} zone(s) in scope`}`))
+    if (can.canWriteDns === false) {
+      say(red('  but it cannot write DNS. Add Zone → DNS → Edit, then ./scripts/cf-bootstrap.sh --force'))
+      process.exit(1)
+    }
+    say(dim('  DNS writes: ' + (can.canWriteDns === true ? 'yes'
+      : 'not checkable yet - no zone in scope. The migration checks before it changes anything.')))
     say(can.canMint
       ? grn('  it can mint tokens, so every run gets a one-hour credential that is deleted at the end')
       : dim('  it cannot mint tokens - the work runs on this credential directly, which is fine'))
@@ -147,7 +153,16 @@ if (!can.valid) {
   process.exit(1)
 }
 if (can.zones === null) say(yel('  it cannot list zones - add Zone: Read, or zone lookups will fail'))
-if (!can.accountId) say(yel('  it cannot see an account - add Account Settings: Read'))
+
+// The one that actually stopped a migration. Said here, before the credential
+// is stored, so a token that cannot do the work never becomes the stored answer
+// to "is this machine set up?".
+if (can.canWriteDns === false) {
+  say('')
+  say(red('  Token valid, but it cannot write DNS. Add Zone → DNS → Edit and try again.'))
+  say(dim('  Nothing has been stored. The link above is still the right one.'))
+  process.exit(1)
+}
 
 const s = await auth.keychainSet(token)
 
@@ -163,6 +178,9 @@ if (back !== token) {
 say('')
 say(grn(b('  Done.')) + ` stored in ${s.name}${s.secure ? '' : yel(' - plaintext, no secret store here')}`)
 say(dim(`  ${can.zones === null ? 'zones: not readable' : `zones in scope: ${can.zones.length}`}`))
+say(dim('  DNS writes: ' + (can.canWriteDns === true ? 'yes'
+  : can.canWriteDns === false ? 'NO'
+    : 'not checkable yet - no zone in scope. The migration checks before it changes anything.')))
 say(can.canMint
   ? dim('  ephemeral tokens: on. Each run mints one for an hour and deletes it at the end.')
   : dim('  ephemeral tokens: off. Runs use this credential directly.')

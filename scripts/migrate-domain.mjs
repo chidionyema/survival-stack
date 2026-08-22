@@ -143,35 +143,33 @@ if (!real.some((r) => r.type === 'MX')) say(red('  no MX — if this domain take
 
 if (dryRun) { say(''); say('--dry-run: nothing was created.'); process.exit(0) }
 
-// -------------------------------------------------------------- 2. create it
+// ------------------------------------- 2. prove the credential, then create it
 
+// z.ensureZone does the ordering: probe before mutation, and roll back a zone
+// it created if the credential turns out not to be able to write DNS in it.
 say('')
 say(b('Cloudflare'))
-let zone = await z.findZone(T, domain)
-if (zone) {
-  say(`  zone already exists (${zone.status})`)
-} else {
-  // A null account is fine. See createZone: a zone-scoped token sees no
-  // accounts and Cloudflare attaches the zone to the only one it belongs to.
-  const acct = await z.accountId(T)
-  zone = await z.createZone(T, acct, domain).catch((e) => { say(red('  ' + e.message)); return null })
-  if (!zone) await bail(1)
-  say(`  zone created (${zone.status})`)
-  say(dim('  waiting for its own scan, as a second opinion on the record list'))
-  await new Promise((r) => setTimeout(r, 20000))
-}
 
-// Before eight writes fail one at a time, ask once whether this credential can
-// write DNS at all. A token can hold Zone:Edit, create the zone, list it, and
-// still be refused every record - and the refusals say only "Authentication
-// error", which sends you looking at the token rather than at its permissions.
-if (!(await z.dnsReachable(T, zone.id))) {
-  say(red('  this credential can see the zone but not its DNS records.'))
-  say(dim('  It is missing Zone → DNS → Edit. The zone is created and stays created;'))
-  say(dim('  add the permission and run this again — it will pick up where it stopped.'))
+const got = await z.ensureZone(T, domain, {
+  log: (what, zn) => say(what === 'exists' ? `  zone already exists (${zn.status})` : `  zone created (${zn.status})`),
+}).catch((e) => { say(red('  ' + e.message)); return null })
+if (!got) await bail(1)
+
+if (got.error === 'no-dns') {
+  say(red('  this credential cannot write DNS records.'))
+  say(dim('  It is missing Zone → DNS → Edit. Add it and run this again.'))
+  say(dim(got.rolledBack
+    ? '  the zone this run created has been removed - nothing was left behind'
+    : '  nothing was changed'))
   say('')
   say('  ' + auth.TOKEN_URL)
   await bail(1)
+}
+const zone = got.zone
+
+if (got.fresh) {
+  say(dim('  waiting for its own scan, as a second opinion on the record list'))
+  await new Promise((r) => setTimeout(r, 20000))
 }
 
 // --------------------------------------------------- 3. two guessers compared

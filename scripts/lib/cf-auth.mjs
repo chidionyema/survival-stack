@@ -397,13 +397,28 @@ export async function revokeToken(rootToken, tokenId) {
 //   zone edit — unprovable without creating a zone, so it is not claimed here
 export async function capability(token) {
   const v = await api(token, '/user/tokens/verify')
-  if (!v.ok) return { valid: false, canMint: false, accountId: null, zones: null, offline: !!v.offline }
+  if (!v.ok) return { valid: false, canMint: false, canWriteDns: null, accountId: null, zones: null, offline: !!v.offline }
 
   const acc = await api(token, '/accounts?per_page=1')
   const accountId = acc.ok ? acc.body.result?.[0]?.id || null : null
 
   const zr = await api(token, '/zones?per_page=50')
-  const zones = zr.ok ? (zr.body.result || []).map((z) => z.name) : null
+  const zoneList = zr.ok ? zr.body.result || [] : null
+  const zones = zoneList ? zoneList.map((z) => z.name) : null
+
+  // "Valid" and "can do the job" are different facts. A token holding Zone:Edit
+  // and nothing else verifies, lists zones, creates zones, and is refused every
+  // DNS call. Asking is one request, and it must be asked before anything is
+  // changed rather than discovered on record 1 of 8.
+  //
+  // null means unknown, not no. With no zone in scope there is nothing to ask
+  // about, and reporting that as a failure would send somebody to fix a
+  // permission that may already be there.
+  let canWriteDns = null
+  if (zoneList && zoneList.length) {
+    const r = await api(token, `/zones/${zoneList[0].id}/dns_records?per_page=1`)
+    canWriteDns = r.offline ? null : r.ok
+  }
 
   let canMint = false
   if (accountId) {
@@ -413,5 +428,5 @@ export async function capability(token) {
       await revokeToken(token, probe.id)
     }
   }
-  return { valid: true, canMint, accountId, zones }
+  return { valid: true, canMint, canWriteDns, accountId, zones }
 }

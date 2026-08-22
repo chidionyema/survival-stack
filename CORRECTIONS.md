@@ -92,3 +92,47 @@ means no claim either way, never a claim that the domain is unlocked.
 nameservers after the record comparison passes, which is the whole point of it.
 I put them in a chat message while the Cloudflare zone was still empty, and the
 founder acted on the message. Nameservers do not get handed over early.
+
+## The probe runs before the mutation, and a failed run leaves nothing behind
+
+**2026-08-22 | Cloudflare migration UX | Founder: "This is not nice debugging."**
+
+The script created the zone with a token that could not write DNS, then failed
+on record 1 of 8 with `Authentication error`. A first-time user was left with a
+half-created zone and a message that named no permission.
+
+**The rule: every mutation is preceded by a permission probe. Fail loud in one
+line, not after partial state. One failed run leaves zero side effects.**
+
+The obvious fix is to read the token's own permissions and never touch anything.
+Cloudflare does not offer it. Measured live, this is the entire result object
+from the verify endpoint:
+
+```
+GET /user/tokens/verify  ->  200
+{"id":"b60f5e02356a7b1f71f6104f4f873496","status":"active"}
+```
+
+Two keys. No `policies`, no `permission_groups`. Policies live on
+`GET /user/tokens/{id}`, which needs User → API Tokens → Read — a permission a
+DNS-editing token does not carry and should not be asked for. Measured on the
+same token: `403 code 9109` on `/user/tokens` and on
+`/user/tokens/permission_groups`. So a pure read-only permission check is not
+available, and the honest probe is a real call to the endpoint the work uses.
+
+`ensureZone()` in `scripts/console/zone.mjs` does the ordering, in three cases:
+
+| what is in scope | what happens | side effects on failure |
+|---|---|---|
+| the zone already exists | probe it | none |
+| some other zone exists | probe that one | none |
+| nothing at all | create, probe, delete on refusal | none |
+
+The rollback only ever removes a zone that same run created. Deleting a
+pre-existing zone over a permission failure would turn a bad first run into a
+lost configuration, which is worse than the bug it cleans up after.
+
+Guards: `test/incident-cf-permissions.test.js` asserts the call *order* — create
+before probe before delete — not just the outcome, plus that no zone is created
+when another was available to probe, and that a pre-existing zone is never
+deleted.
