@@ -47,7 +47,24 @@ say "Survival Stack — one-time setup"
 echo "This stores secrets in Cloudflare, encrypted. Nothing is written to this machine."
 
 say "1. Cloudflare login"
-$WRANGLER whoami >/dev/null 2>&1 || $WRANGLER login
+# `wrangler whoami` prints "You are not authenticated" and exits 0, so its exit
+# code is useless as a login test. It said yes, login never ran, and the first
+# real command failed nine lines later asking for an API token. Read the words.
+logged_in() { $WRANGLER whoami 2>&1 | grep -qE 'Account ID|associated with the email'; }
+if logged_in; then
+  echo "  already logged in"
+else
+  echo "  not logged in. A browser window will open. Approve it, then come back here."
+  $WRANGLER login
+  logged_in || {
+    echo "Login did not complete. Nothing has been stored, so run this again." >&2
+    echo "If you would rather use a token: create one with Workers Scripts:Edit," >&2
+    echo "Workers KV:Edit, Workers R2:Edit and Zone:DNS:Edit, then" >&2
+    echo "  export CLOUDFLARE_API_TOKEN=... && npm run secrets" >&2
+    exit 1
+  }
+  echo "  logged in"
+fi
 
 say "2. State stores"
 echo "Creating the KV namespace and the two R2 buckets (skipped if they exist)."
