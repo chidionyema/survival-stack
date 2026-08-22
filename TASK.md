@@ -25,8 +25,8 @@ two real VMs. See `docs/SURVIVAL_STACK_v5.1_CORRECTION.md` section 0b.
 The dry run must be green on the day, not last week.
 
 ```
-npm test                         # 38 passing, 0 failing
-scripts/dry-run.sh               # up, then A to H
+npm test                         # 39 passing, 0 failing
+scripts/dry-run.sh               # up, then A to H — 41 assertions
 scripts/dry-run.sh down
 ```
 
