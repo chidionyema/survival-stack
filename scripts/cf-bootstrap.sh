@@ -4,6 +4,7 @@
 #   ./scripts/cf-bootstrap.sh            get a credential and store it
 #   ./scripts/cf-bootstrap.sh --full     also ask for API Tokens: Edit
 #   ./scripts/cf-bootstrap.sh --forget   remove the stored credential
+#   ./scripts/cf-bootstrap.sh --stdin    type or pipe it in, never the clipboard
 #
 # The flow itself is scripts/cf-bootstrap.mjs. It is in node because the
 # clipboard reader, the secret store and the Cloudflare checks are already

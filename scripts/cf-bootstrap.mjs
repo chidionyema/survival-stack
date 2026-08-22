@@ -5,6 +5,7 @@
 //   ./scripts/cf-bootstrap.sh --full     also API Tokens: Edit, so runs can
 //                                        mint a one-hour token and revoke it
 //   ./scripts/cf-bootstrap.sh --forget   remove the stored credential
+//   ./scripts/cf-bootstrap.sh --stdin    type or pipe it in, never the clipboard
 //
 // It never prints a token, never writes one to a file where a secret store
 // exists, and refuses a credential belonging to another vendor before anything
@@ -25,6 +26,11 @@ const force = process.argv.includes('--force')
 // what a script or a test asks, and what somebody asks before starting a
 // migration they do not want to abandon halfway.
 const checkOnly = process.argv.includes('--check')
+// --stdin never touches the clipboard. The watcher is the seamless path and it
+// has a cost: between copying the token and this tool reading it, the credential
+// is on the pasteboard, where every process running as this user can read it.
+// Typing it, or piping it out of a password manager, skips that entirely.
+const stdinOnly = process.argv.includes('--stdin')
 
 const plat = await auth.platform()
 const store = await auth.secretStore()
@@ -84,14 +90,17 @@ if (full) {
   say(dim('  --full: the page also asks for API Tokens: Edit. That permission can'))
   say(dim('  mint a token that does anything the account can do. Grant it knowingly.'))
 }
-const opened = await auth.openBrowser(url)
-if (!opened) {
+// A pipe means the token already exists somewhere, so the page that creates one
+// is noise. Everything above still prints: it is the permission list, and it is
+// what the value being piped in has to have.
+const opened = process.stdin.isTTY ? await auth.openBrowser(url) : false
+if (!opened && process.stdin.isTTY) {
   say(yel('  could not open a browser. Open this:'))
   say('  ' + url)
 }
 say('')
 
-const reader = await auth.clipboardReader()
+const reader = stdinOnly ? null : await auth.clipboardReader()
 let token = null
 
 if (reader) {
@@ -108,6 +117,16 @@ if (reader) {
   })
   process.stdout.write('\r' + ' '.repeat(46) + '\r')
   token = got.token
+  // Read is not the same as taken. The token is still sitting on the pasteboard
+  // and stays there until somebody copies something else, so it is overwritten
+  // here rather than left for whatever reads the clipboard next.
+  if (token) {
+    say(dim(await auth.clipboardClear()
+      ? '  clipboard cleared'
+      : '  could not clear the clipboard - copy something else before you walk away'))
+  }
+} else if (stdinOnly) {
+  say(dim('  --stdin: nothing is read from the clipboard.'))
 } else {
   const install = await auth.clipboardInstall()
   say(yel('  no clipboard tool on this machine, so this one time it has to be pasted.'))
@@ -120,12 +139,21 @@ if (reader) {
 // box, a locked-down Linux, an ssh session with no X. Falling through to a
 // hidden paste is the difference between "works everywhere" and "works here".
 if (!token) {
-  if (!process.stdin.isTTY) {
-    say(red('  nothing arrived and there is no terminal to paste into.'))
-    say(dim('  set CF_API_TOKEN in the environment instead.'))
-    process.exit(1)
+  if (process.stdin.isTTY) {
+    token = await readHidden('  Paste the token (it will not echo): ')
+  } else {
+    // A pipe is the best input there is: the value comes straight out of a
+    // password manager and never lands on a clipboard, in a shell history or
+    // in this process's argv.
+    //   op read 'op://Private/Cloudflare/token' | ./scripts/cf-bootstrap.sh --stdin
+    token = await readPipe()
+    if (!token) {
+      say(red('  nothing arrived on stdin and there is no terminal to paste into.'))
+      say(dim('  pipe the token in, or set CF_API_TOKEN in the environment.'))
+      process.exit(1)
+    }
+    say(dim('  read from stdin'))
   }
-  token = await readHidden('  Paste the token (it will not echo): ')
 }
 
 if (!token) {
@@ -194,6 +222,16 @@ say('')
 
 // Nothing is echoed, so a shoulder, a screen share and the scrollback all see
 // the same thing: the prompt, and no characters after it.
+// stdin to the end, for the piped case. Trimmed, because a here-string and
+// every password manager add a newline, and a token with one on the end fails
+// the shape check for a reason nobody would guess.
+async function readPipe() {
+  let buf = ''
+  process.stdin.setEncoding('utf8')
+  for await (const chunk of process.stdin) buf += chunk
+  return buf.trim()
+}
+
 function readHidden(prompt) {
   return new Promise((resolve) => {
     process.stdout.write(prompt)

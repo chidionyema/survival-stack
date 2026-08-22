@@ -75,6 +75,19 @@ credential able to do anything the account can do. mumchimp.com was migrated
 ./scripts/cf-bootstrap.sh --check     # is this machine set up? opens nothing
 ./scripts/cf-bootstrap.sh --force     # replace the stored credential
 ./scripts/cf-bootstrap.sh --forget    # remove it
+./scripts/cf-bootstrap.sh --stdin     # type or pipe it, never the clipboard
+```
+
+The clipboard watcher is the seamless path and it has a cost: between the copy
+and this tool reading it, the token is on the pasteboard, where every process
+running as you can read it. So the clipboard is overwritten the moment the
+token is taken, and it says whether that worked.
+
+`--stdin` skips the pasteboard entirely. Piped, the value never lands anywhere
+readable — not a clipboard, not a shell history, not this process's argv:
+
+```bash
+op read 'op://Private/Cloudflare/token' | ./scripts/cf-bootstrap.sh --stdin
 ```
 
 ### 2. Registrar access
@@ -300,6 +313,7 @@ both read and write — are facts about the wire, not about the code.
 | Signature over the body, never the key | A header carrying the shared secret hands it to whoever receives one request | `X-Migration-Secret: <the secret>` |
 | Notifications cannot fail the run | A status message is not worth a dead migration | Throw on webhook error |
 | `security` fed on stdin | `-w SECRET` in argv is readable in `ps` — measured, three lines | Passing the token as an argument |
+| The clipboard is cleared after the token is read | Read is not taken. It sits there until something else is copied | Leaving it for the next thing that reads the clipboard |
 
 ---
 

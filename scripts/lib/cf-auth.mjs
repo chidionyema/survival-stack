@@ -19,7 +19,7 @@
 // the token to appear, checks it against Cloudflare, and puts it in whatever
 // secret store the machine has. Nothing is typed and nothing reaches a file in
 // plaintext unless the machine has no secret store at all, which it says.
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { readFile, writeFile, mkdir, rm } from 'node:fs/promises'
 import { homedir, platform as osPlatform } from 'node:os'
@@ -307,6 +307,40 @@ export async function clipboard() {
   const out = await run(r.cmd, r.args).catch(() => null)
   if (!out) return ''
   return r.crlf ? out.stdout.replace(/\r/g, '') : out.stdout
+}
+
+// The other direction, and only ever used to overwrite. A token that has been
+// read off the clipboard is still on the clipboard, where every process running
+// as this user can read it for as long as nobody copies anything else. Putting
+// one space there costs nothing and closes that window.
+export async function clipboardWriter() {
+  const p = await platform()
+  if (p === 'macos') return { cmd: '/usr/bin/pbcopy', args: [] }
+  if (p === 'wsl' || p === 'windows') {
+    const exe = p === 'wsl' ? 'clip.exe' : 'clip'
+    if (await has(exe)) return { cmd: exe, args: [] }
+    return null
+  }
+  if (process.env.WAYLAND_DISPLAY && (await has('wl-copy'))) return { cmd: 'wl-copy', args: [] }
+  if (await has('xclip')) return { cmd: 'xclip', args: ['-selection', 'clipboard'] }
+  if (await has('xsel')) return { cmd: 'xsel', args: ['--clipboard', '--input'] }
+  return null
+}
+
+// Returns whether it managed it, so the caller can say so rather than claiming
+// a clean clipboard it never checked. Never throws: failing to clear is worth
+// a warning, not a dead bootstrap.
+export async function clipboardClear() {
+  const w = await clipboardWriter()
+  if (!w) return false
+  try {
+    const child = spawn(w.cmd, w.args, { stdio: ['pipe', 'ignore', 'ignore'] })
+    child.stdin.end(' ')
+    await new Promise((resolve) => { child.on('close', resolve); child.on('error', resolve) })
+  } catch { return false }
+  // One angle is the write succeeding, which says nothing about what is there
+  // now. The second is reading it back.
+  return !looksLikeToken((await clipboard()).trim())
 }
 
 // Waits for a token to appear on the clipboard, checks it is real, and returns
