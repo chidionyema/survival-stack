@@ -10,9 +10,9 @@ Feature: Cold start from a park bench, with the data
   Scenario: every box is gone and a phone brings one back with its data
     Given no boxes are running
     And a "primary" box is registered and healthy
-    And an order "order-before-disaster" is written to the primary
+    And an order is written to the primary
     And the write has reached object storage
     When every box is destroyed
     And I cold start from Telegram
     Then a primary box is healthy within 300 seconds
-    And the restored box carries at least 1 order
+    And the restored box carries every order that was written

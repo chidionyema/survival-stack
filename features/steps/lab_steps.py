@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 from behave import given, then, when
@@ -149,10 +150,17 @@ def step_promote(context):
 
 # ------------------------------------------------------------- cold start
 
-@given('an order "{order_id}" is written to the primary')
-def step_write_order(context, order_id):
-    status, text = lab.request(f"{lab.ORIGIN_P1}/api/orders", "POST", {"id": order_id})
+@given("an order is written to the primary")
+def step_write_order(context):
+    # A fixed order id passes once and then collides forever. The restore brings
+    # the previous run's row back out of object storage, and the engine answers
+    # 500 on the duplicate primary key. The id has to be new every run.
+    context.order_id = f"order-{uuid.uuid4().hex[:12]}"
+    status, text = lab.request(f"{lab.ORIGIN_P1}/api/orders", "POST", {"id": context.order_id})
     assert status in (200, 201), f"the primary refused the order ({status}): {text[:200]}"
+    _, data = lab.get_json(f"{lab.ORIGIN_P1}/health")
+    context.orders_before = int(data.get("orders", 0) or 0)
+    assert context.orders_before >= 1, "the write did not land in the database"
 
 
 @given("the write has reached object storage")
@@ -173,9 +181,20 @@ def step_primary_healthy(context, seconds):
         "the cold start never produced a healthy primary"
 
 
+@then("the restored box carries every order that was written")
+def step_orders_restored(context):
+    # Counting is the whole check the engine allows: /health reports a count and
+    # there is no endpoint that lists ids. A restore that lost the write above
+    # comes back one short, so the count still catches it.
+    _, data = lab.get_json(f"{lab.ORIGIN_P1}/health")
+    got = int(data.get("orders", 0) or 0)
+    assert got >= context.orders_before, \
+        f"the restored box has {got} orders, expected at least {context.orders_before} — the restore lost data"
+
+
 @then("the restored box carries at least {n:d} order")
 @then("the restored box carries at least {n:d} orders")
-def step_orders_restored(context, n):
+def step_orders_at_least(context, n):
     _, data = lab.get_json(f"{lab.ORIGIN_P1}/health")
     got = int(data.get("orders", 0) or 0)
     assert got >= n, f"the restored box has {got} order(s), expected at least {n} — the restore lost data"
