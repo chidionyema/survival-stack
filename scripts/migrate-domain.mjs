@@ -277,7 +277,13 @@ for (const step of only) {
 // Nothing past here calls Cloudflare — the watch loop only asks nameservers.
 await cleanUp()
 
-if (phase) process.exit(0)
+if (phase) {
+  // --watch lives past this line, so a run that asked for both got neither the
+  // wait nor a word about it. Say so rather than exit quietly: a command that
+  // silently ignores half of what you typed teaches you to distrust the rest.
+  if (watch) say(dim('  --watch does nothing with --phase. Run without --phase to wait for the registrar.'))
+  process.exit(0)
+}
 
 // --------------------------------------------------------- the one manual step
 
