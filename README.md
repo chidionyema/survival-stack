@@ -104,3 +104,31 @@ $ npm test
 ℹ pass 27
 ℹ fail 0
 ```
+
+## The dry run
+
+Real code, fake infrastructure. The Worker under test is the production one;
+only the world around it is faked, so nothing is proven about a Worker that
+does not exist.
+
+| Real | Faked by | Where |
+|---|---|---|
+| The control plane | nothing — the real Worker runs | `wrangler dev` on port 8787 |
+| Hetzner / DigitalOcean / Vultr | a provider driver whose backend is `docker run` | `src/providers/docker.js`, `lab/shim.js` |
+| R2, for the boxes | MinIO | `lab/dry-run.yml` |
+| R2, for the Worker | the local store `wrangler dev` provides | `.wrangler/state` |
+| The proxied apex A record | Caddy, reconfigured whenever DNS moves | `lab/state/Caddyfile` |
+| Telegram | a recorder the tests can read back | `lab/shim.js` |
+
+```bash
+scripts/dry-run.sh          # build, start, run tests A to D
+scripts/dry-run.sh down     # remove all of it
+```
+
+The three environment seams that make this possible (`CF_API_BASE`,
+`TELEGRAM_API_BASE`, `LAB_ORIGIN_P1` / `LAB_ORIGIN_P2`) are unset in
+production, where the constants in `src/dns.js` and `src/telegram.js` apply.
+
+What the dry run cannot prove: real VM boot time, provider API quirks, DNS
+propagation, Let's Encrypt issuance, live Stripe. Those need money and a real
+Monday.

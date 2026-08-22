@@ -2,3 +2,7 @@ node_modules/
 .dev.vars
 .wrangler/
 *.log
+
+# lab scratch: logs, the DNS table the shim keeps, the Caddyfile it rewrites
+lab/state/*
+!lab/state/.gitkeep

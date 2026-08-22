@@ -21,6 +21,10 @@ test('cloud-init asks for the two modes the sidecars implement', () => {
     assert.match(sh, /^\s+restore\)/m, `${db} handles restore`)
     assert.match(sh, /^\s+backup\)/m, `${db} handles backup`)
     assert.match(sh, /unknown mode/, `${db} refuses anything else`)
+    // The mode check must come before the credential checks, or a caller with
+    // the wrong verb is told a variable is unset instead of what it got wrong.
+    assert.ok(sh.indexOf('unknown mode') < sh.search(/\$\{[A-Z0-9_]+:\?/),
+      `${db} checks the mode before the credentials`)
     // Every variable the sidecar demands must be in the env file cloud-init writes.
     for (const req of sh.match(/\$\{([A-Z0-9_]+):\?/g) ?? []) {
       const name = req.slice(2, -2)

@@ -5,6 +5,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 WRANGLER="npx --yes wrangler@latest"
+TMP=$(mktemp); trap 'rm -f "$TMP"' EXIT
 
 say()  { printf '\n\033[1m%s\033[0m\n' "$*"; }
 ask()  { local p="$1" d="${2:-}" v; read -r -p "$p${d:+ [$d]}: " v; echo "${v:-$d}"; }
@@ -16,6 +17,25 @@ secret() {
   echo "  stored $name"
 }
 
+if [ ! -t 0 ]; then
+  cat >&2 <<'MSG'
+This wizard needs a real terminal. It was started without one, so every
+prompt reads end-of-file and wrangler cannot open a browser to log in.
+
+Open Terminal.app and run:
+
+    cd ~/dev/code/survival-stack && npm run secrets
+
+If you would rather not use a browser login, create a Cloudflare API token
+with Workers Scripts:Edit, Workers KV:Edit, Workers R2:Edit and Zone:DNS:Edit,
+then run:
+
+    export CLOUDFLARE_API_TOKEN=...
+    npm run secrets
+MSG
+  exit 1
+fi
+
 say "Survival Stack — one-time setup"
 echo "This stores secrets in Cloudflare, encrypted. Nothing is written to this machine."
 
@@ -24,12 +44,21 @@ $WRANGLER whoami >/dev/null 2>&1 || $WRANGLER login
 
 say "2. State stores"
 echo "Creating the KV namespace and the two R2 buckets (skipped if they exist)."
-$WRANGLER kv namespace create STATE 2>&1 | grep -E 'id|already' || true
+$WRANGLER kv namespace create STATE >"$TMP" 2>&1 || true
+KV_ID=$(grep -oE '[0-9a-f]{32}' "$TMP" | head -1)
+if [ -z "$KV_ID" ]; then
+  # Already created by an earlier run. Ask the account, not the founder.
+  KV_ID=$($WRANGLER kv namespace list 2>/dev/null | python3 -c 'import json,sys;print(next((n["id"] for n in json.load(sys.stdin) if n["title"].endswith("STATE")),""))' 2>/dev/null || true)
+fi
+if [ -z "$KV_ID" ]; then
+  echo "Could not create or find the KV namespace. Check the Cloudflare login above." >&2
+  cat "$TMP" >&2
+  exit 1
+fi
+python3 scripts/set-kv-id.py "$KV_ID"
+echo "  KV namespace written into wrangler.jsonc"
 $WRANGLER r2 bucket create survival-audit 2>&1 | grep -Ev '^$' || true
 $WRANGLER r2 bucket create survival-data  2>&1 | grep -Ev '^$' || true
-echo
-echo "Paste the KV id printed above into wrangler.jsonc (kv_namespaces[0].id), then press return."
-read -r _
 
 say "3. Your TOTP secret"
 echo "This is the key your authenticator app holds. Generate one now if you have none:"

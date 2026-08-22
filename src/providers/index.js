@@ -9,8 +9,9 @@
 import { hetzner } from './hetzner.js'
 import { digitalocean } from './digitalocean.js'
 import { vultr } from './vultr.js'
+import { docker } from './docker.js'
 
-export const DRIVERS = { hetzner, digitalocean, vultr }
+export const DRIVERS = { hetzner, digitalocean, vultr, docker }
 
 export function driverFor(name) {
   const key = String(name ?? '').toLowerCase()

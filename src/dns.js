@@ -1,7 +1,9 @@
 const CF = 'https://api.cloudflare.com/client/v4'
 
+// CF_API_BASE exists so the local lab can put a stand-in in front of the real
+// API. Unset in production, which is where the constant above is used.
 async function cf(env, path, init = {}) {
-  const res = await fetch(`${CF}${path}`, {
+  const res = await fetch(`${env.CF_API_BASE || CF}${path}`, {
     ...init,
     headers: {
       authorization: `Bearer ${env.CF_API_TOKEN}`,
@@ -34,6 +36,13 @@ export async function pointAt(env, ip) {
 // which is what makes degraded mode and health checks possible on a free plan.
 export function originHost(env, role) {
   return `${role === 'primary' ? 'p1' : 'p2'}.${env.DOMAIN}`
+}
+
+// Where the Worker reaches a box. https://p1.<domain> in production; the lab
+// overrides it with a loopback port because a container has no public name.
+export function originBase(env, role) {
+  const lab = role === 'primary' ? env.LAB_ORIGIN_P1 : env.LAB_ORIGIN_P2
+  return lab || `https://${originHost(env, role)}`
 }
 
 export async function upsertRecord(env, name, ip, proxied = false) {

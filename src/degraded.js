@@ -5,17 +5,23 @@
 import { audit } from './audit.js'
 import * as tg from './telegram.js'
 import { getBoxes } from './state.js'
-import { originHost } from './dns.js'
+import { originBase } from './dns.js'
 
 const ORIGIN_TIMEOUT_MS = 8000
 
-async function tryOrigin(env, request, role) {
+async function tryOrigin(env, request, role, body) {
   const boxes = await getBoxes(env)
   if (!boxes[role]) return null
-  const url = new URL(request.url)
-  url.hostname = originHost(env, role)
+  const here = new URL(request.url)
+  const url = new URL(here.pathname + here.search, originBase(env, role))
   try {
-    const res = await fetch(new Request(url, request), {
+    // The body is passed in already read. A Request body is a stream and can
+    // only be consumed once; forwarding the original would leave nothing to
+    // queue when the origin turns out to be dead, which loses the order.
+    const res = await fetch(url, {
+      method: request.method,
+      headers: request.headers,
+      body: body ?? undefined,
       signal: AbortSignal.timeout(ORIGIN_TIMEOUT_MS),
     })
     return res.status >= 500 ? null : res
@@ -25,14 +31,19 @@ async function tryOrigin(env, request, role) {
 }
 
 export async function serve(env, request, ctx) {
-  const live = (await tryOrigin(env, request, 'primary')) ?? (await tryOrigin(env, request, 'standby'))
+  const hasBody = request.method !== 'GET' && request.method !== 'HEAD'
+  const body = hasBody ? await request.arrayBuffer() : null
+
+  const live =
+    (await tryOrigin(env, request, 'primary', body)) ??
+    (await tryOrigin(env, request, 'standby', body))
   if (live) return live
 
   ctx.waitUntil(announceDegraded(env))
   const url = new URL(request.url)
 
   if (request.method === 'POST' && url.pathname === '/order') {
-    return queueOrder(env, request)
+    return queueOrder(env, request, body)
   }
   return catalogPage(env)
 }
@@ -47,12 +58,22 @@ async function announceDegraded(env) {
   await tg.send(env, `⚠️ Degraded mode active. Both boxes unreachable. ${queued.objects.length} orders queued.`)
 }
 
-async function queueOrder(env, request) {
-  let order
-  try {
-    order = await request.json()
-  } catch {
-    return json({ ok: false, error: 'bad json' }, 400)
+// The catalog page posts a plain HTML form, and an app posts JSON. Both are
+// orders and both must be kept; refusing either loses a sale in the one mode
+// where there is nothing else to fall back on.
+function parseOrder(body, contentType) {
+  const text = new TextDecoder().decode(body ?? new ArrayBuffer(0))
+  if (!text) return null
+  if ((contentType || '').includes('application/json')) {
+    try { return JSON.parse(text) } catch { return null }
+  }
+  try { return Object.fromEntries(new URLSearchParams(text)) } catch { return null }
+}
+
+async function queueOrder(env, request, body) {
+  const order = parseOrder(body, request.headers.get('content-type'))
+  if (!order || Object.keys(order).length === 0) {
+    return json({ ok: false, error: 'empty order' }, 400)
   }
   const id = crypto.randomUUID()
   const at = new Date(Date.now()).toISOString()

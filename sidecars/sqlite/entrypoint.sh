@@ -5,6 +5,13 @@
 set -euo pipefail
 
 MODE="${1:-${MODE:-backup}}"
+
+# Check the verb before the credentials. A caller that asks for a mode we do
+# not have gets told that, not a complaint about an unset variable.
+case "$MODE" in
+  restore|backup) ;;
+  *) echo "unknown mode: $MODE (expected restore or backup)" >&2; exit 2 ;;
+esac
 DB="${DB_DATA_PATH:-/data}/app.db"
 REPLICA="s3://${R2_BUCKET:?R2_BUCKET required}/sqlite"
 

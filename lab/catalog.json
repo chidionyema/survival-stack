@@ -1,0 +1,4 @@
+[
+  { "sku": "pack-basic",  "name": "Starter Pack", "price": "£10.00" },
+  { "sku": "pack-family", "name": "Family Pack",  "price": "£45.00" }
+]

@@ -1,12 +1,17 @@
 const API = 'https://api.telegram.org/bot'
 
 async function call(env, method, payload) {
-  const res = await fetch(`${API}${env.TELEGRAM_BOT_TOKEN}/${method}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-  const json = await res.json().catch(() => ({ ok: false }))
+  let json = { ok: false }
+  try {
+    const res = await fetch(`${env.TELEGRAM_API_BASE || API}${env.TELEGRAM_BOT_TOKEN}/${method}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    json = await res.json().catch(() => ({ ok: false }))
+  } catch (err) {
+    json = { ok: false, error: String(err) }
+  }
   if (!json.ok) console.error('telegram', method, JSON.stringify(json))
   return json
 }

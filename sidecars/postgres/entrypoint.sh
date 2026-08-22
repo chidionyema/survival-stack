@@ -4,6 +4,13 @@
 set -euo pipefail
 
 MODE="${1:-${MODE:-backup}}"
+
+# Check the verb before the credentials. A caller that asks for a mode we do
+# not have gets told that, not a complaint about an unset variable.
+case "$MODE" in
+  restore|backup) ;;
+  *) echo "unknown mode: $MODE (expected restore or backup)" >&2; exit 2 ;;
+esac
 export PGDATA="${DB_DATA_PATH:-/var/lib/postgresql/data}"
 export WALG_S3_PREFIX="s3://${R2_BUCKET:?R2_BUCKET required}/postgres"
 export AWS_ACCESS_KEY_ID="${R2_ACCESS_KEY:?R2_ACCESS_KEY required}"
