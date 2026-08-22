@@ -136,3 +136,16 @@ Guards: `test/incident-cf-permissions.test.js` asserts the call *order* — crea
 before probe before delete — not just the outcome, plus that no zone is created
 when another was available to probe, and that a pre-existing zone is never
 deleted.
+
+## The clipboard's current contents are a candidate, not a baseline
+
+**2026-08-22.** The founder created the token and copied it before starting the
+tool. `waitForTokenOnClipboard` snapshotted the clipboard as `before`, excluded
+it, and waited for a copy that had already happened — silently, again.
+
+Same class as the 40-character regex: a real credential present and ignored,
+with no output saying so. Copying the thing before running the tool that wants
+it is the obvious order to do it in, and it was the one order that failed.
+
+Guard: `test/cf-bootstrap.test.js`, *incident: a token copied before the tool
+started was waited for anyway*.

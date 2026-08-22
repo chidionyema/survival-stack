@@ -267,8 +267,15 @@ export async function clipboard() {
 // it. Only runs while the caller has said on screen that it is waiting, only
 // sends on what could be a credential, and never reports what else was there.
 export async function waitForTokenOnClipboard({ seconds = 300, onTick = () => {}, validate } = {}) {
-  const before = (await clipboard()).trim()
-  const tried = new Set([before])
+  // The thing already on the clipboard is a candidate, not a baseline.
+  //
+  // The incident: the founder created the token and copied it before starting
+  // the tool. The watcher snapshotted the clipboard as "before", excluded it,
+  // and then waited half an hour for a copy that had already happened. Same
+  // class as the 40-character regex - a real credential sitting there, ignored
+  // in silence. Cloudflare decides whether it is a token, so there is no reason
+  // to skip it; anything that is not credential-shaped never leaves the machine.
+  const tried = new Set()
   for (let i = 0; i < seconds * 2; i++) {
     const now = (await clipboard()).trim()
     if (now && !tried.has(now)) {

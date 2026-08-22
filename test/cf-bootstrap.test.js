@@ -168,3 +168,29 @@ test('--check reports the credential and never prints it', async () => {
   // --check answers a question. It must not open a browser to do it.
   assert.equal(/Continue to summary/.test(out), false, '--check started the interactive flow')
 })
+
+test('incident: a token copied before the tool started was waited for anyway', async () => {
+  // The watcher used to snapshot the clipboard and exclude it, so copying the
+  // token first - the obvious thing to do - meant waiting out the whole window
+  // for a copy that had already happened. Nothing was printed while it waited.
+  const pbcopy = async (s) => {
+    const p = execFile('/usr/bin/pbcopy')
+    p.stdin.end(s)
+    await new Promise((r) => p.on('close', r))
+  }
+  const original = await auth.clipboard().catch(() => null)
+  if (original === null) return t?.skip?.('no clipboard here')
+
+  try {
+    const already = 'q'.repeat(44)
+    await pbcopy(already)
+    const got = await auth.waitForTokenOnClipboard({
+      seconds: 3,
+      validate: async () => ({ ok: true, note: 'valid' }),
+      onTick: () => {},
+    })
+    assert.equal(got.token, already, 'a token already on the clipboard was ignored')
+  } finally {
+    await pbcopy(original)
+  }
+})

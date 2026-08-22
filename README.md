@@ -39,7 +39,7 @@ Zero runtime dependencies. `wrangler` is a dev tool, not a dependency of the cod
 Double-click **Set up Survival Stack.command** in Finder. Or, from anywhere:
 
 ```bash
-npm test          # 85 tests, no network
+npm test          # 86 tests, no network
 npm run secrets   # opens the setup console in your browser
 ```
 
@@ -138,8 +138,8 @@ example tests of orchestration.
 
 ```
 $ npm test
-ℹ tests 85
-ℹ pass 85
+ℹ tests 86
+ℹ pass 86
 ℹ fail 0
 ```
 
