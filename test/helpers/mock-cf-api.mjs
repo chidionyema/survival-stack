@@ -32,6 +32,13 @@
  *  5. createdZones and deletedZones report what the server actually did, not
  *     what was asked for. A DELETE that came back 403 is not a deletion, and
  *     the invariant "it never deleted their zone" has to be able to tell.
+ *
+ * What this cannot fake: DNS. A full CLI run against this server gets through
+ * discover, validate and prepare, and then verify refuses - it asks the real
+ * resolvers what the returned nameservers serve, and danica/kai do not serve
+ * the domain. That is the gate doing its job, not a broken harness, and it is
+ * why the verify, cutover and lockdown cases in migration-phases.test.js
+ * inject their own DNS rather than going end to end.
  */
 
 import http from 'http'
