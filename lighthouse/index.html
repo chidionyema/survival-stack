@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Survival Ops</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#fff; --ink:#14161a; --muted:#5d6470; --line:#e3e6eb;
+    --ok:#1a7f4b; --bad:#b3261e; --warn:#8a6100; --accent:#14161a;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{--bg:#101215;--card:#181b20;--ink:#eef1f5;--muted:#9aa3af;--line:#272c34;
+          --ok:#4ade80;--bad:#f87171;--warn:#fbbf24;--accent:#eef1f5}
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+       padding:max(1rem,env(safe-area-inset-top)) 1rem 3rem}
+  main{max-width:34rem;margin:0 auto}
+  h1{font-size:1.1rem;letter-spacing:.02em;text-transform:uppercase;color:var(--muted);margin:0 0 1rem}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:1rem;margin:0 0 .75rem}
+  .row{display:flex;justify-content:space-between;align-items:baseline;gap:1rem;padding:.35rem 0}
+  .row span:last-child{font-variant-numeric:tabular-nums;text-align:right}
+  code{font:14px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace}
+  .dot{display:inline-block;width:.6rem;height:.6rem;border-radius:50%;margin-right:.45rem}
+  .up{background:var(--ok)}.down{background:var(--bad)}.unknown{background:var(--muted)}
+  button{font:inherit;font-weight:600;width:100%;padding:.85rem 1rem;border-radius:11px;
+         border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer}
+  button.primary{background:var(--accent);color:var(--bg);border-color:var(--accent)}
+  button:disabled{opacity:.5;cursor:progress}
+  select{font:inherit;width:100%;padding:.8rem;border-radius:11px;border:1px solid var(--line);
+         background:var(--card);color:var(--ink);margin-bottom:.5rem}
+  .stack{display:grid;gap:.5rem}
+  dialog{border:none;border-radius:14px;padding:1.25rem;background:var(--card);color:var(--ink);
+         width:min(22rem,92vw)}
+  dialog::backdrop{background:#0008}
+  input[type=text]{font:1.6rem/1 ui-monospace,monospace;letter-spacing:.35em;text-align:center;
+                   width:100%;padding:.75rem;border-radius:11px;border:1px solid var(--line);
+                   background:var(--bg);color:var(--ink)}
+  .muted{color:var(--muted);font-size:.85rem}
+  .said{margin-top:.75rem;padding:.7rem .85rem;border-radius:11px;border:1px solid var(--line);
+        background:var(--bg);font-size:.9rem;white-space:pre-wrap}
+</style>
+</head>
+<body>
+<main>
+  <h1>Survival Ops</h1>
+
+  <div class="card" id="state">
+    <div class="row"><span class="muted">Loading last known state…</span></div>
+  </div>
+
+  <div class="card stack">
+    <select id="provider" aria-label="Provider"></select>
+    <button class="primary" data-action="cold-start">Cold start a new primary</button>
+    <button data-action="promote">Promote standby</button>
+    <button data-action="shadow-test">Run shadow test</button>
+    <button data-action="verify">Verify everything</button>
+  </div>
+
+  <div id="said" class="said" hidden></div>
+  <p class="muted" id="stamp"></p>
+</main>
+
+<dialog id="totp">
+  <form method="dialog">
+    <p><strong id="totp-what">Confirm</strong></p>
+    <p class="muted">Six digits from your authenticator.</p>
+    <input type="text" id="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6"
+           autocomplete="one-time-code" placeholder="······">
+    <div class="stack" style="margin-top:1rem">
+      <button class="primary" value="go">Confirm</button>
+      <button value="cancel">Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<script type="module">
+// The control plane URL is the only thing this page needs to know.
+const API = localStorage.getItem('survival.api') ||
+  new URLSearchParams(location.search).get('api') || 'https://REPLACE.workers.dev'
+localStorage.setItem('survival.api', API)
+
+const $ = (s) => document.querySelector(s)
+const said = (text) => { const el = $('#said'); el.hidden = false; el.textContent = text }
+
+function boxRow(role, box) {
+  const cls = box ? 'up' : 'unknown'
+  const right = box ? `${box.ip} · ${box.provider}` : '—'
+  return `<div class="row"><span><i class="dot ${cls}"></i>${role}</span><span><code>${right}</code></span></div>`
+}
+
+function render(s, stale) {
+  $('#state').innerHTML = [
+    `<div class="row"><span>${s.domain ?? 'domain'}</span><span><code>${s.dns?.ip ?? '?'}</code></span></div>`,
+    boxRow('Primary', s.boxes?.primary),
+    boxRow('Standby', s.boxes?.standby),
+    `<div class="row"><span>Last failover</span><span>${s.boxes?.lastFailover?.at?.slice(0,16).replace('T',' ') ?? 'never'}</span></div>`,
+    `<div class="row"><span>Last shadow test</span><span>${
+      s.lastShadow ? `${s.lastShadow.ok ? 'passed' : 'FAILED'} · ${Math.round(s.lastShadow.rtoMs/1000)}s` : 'never'}</span></div>`,
+    s.inFlight?.length ? `<div class="row"><span>In flight</span><span>${s.inFlight.length}</span></div>` : '',
+  ].join('')
+  $('#provider').innerHTML = (s.providers ?? ['hetzner'])
+    .map((p) => `<option value="${p}">${p}</option>`).join('')
+  $('#stamp').textContent = stale
+    ? `Showing the last state this phone saw: ${s.at}. The control plane did not answer.`
+    : `Live as of ${s.at}`
+}
+
+async function load() {
+  try {
+    const res = await fetch(`${API}/api/status`, { cache: 'no-store' })
+    const s = await res.json()
+    localStorage.setItem('survival.state', JSON.stringify(s))
+    render(s, false)
+  } catch {
+    // Every server can be ash and this page still tells you what it last saw.
+    const cached = localStorage.getItem('survival.state')
+    if (cached) render(JSON.parse(cached), true)
+    else $('#stamp').textContent = 'No control plane, no cached state. Use Telegram.'
+  }
+}
+
+function askCode(what) {
+  return new Promise((resolve) => {
+    $('#totp-what').textContent = what
+    $('#code').value = ''
+    const dlg = $('#totp')
+    dlg.addEventListener('close', () => resolve(dlg.returnValue === 'go' ? $('#code').value.trim() : null), { once: true })
+    dlg.showModal()
+    setTimeout(() => $('#code').focus(), 50)
+  })
+}
+
+document.querySelectorAll('button[data-action]').forEach((btn) => {
+  btn.addEventListener('click', async () => {
+    const action = btn.dataset.action
+    if (action === 'verify') {
+      said('Checking…')
+      const r = await fetch(`${API}/api/verify`).then((r) => r.json()).catch((e) => ({ error: String(e) }))
+      return said(JSON.stringify(r.checks ?? r, null, 2))
+    }
+    const provider = $('#provider').value
+    const code = await askCode(action === 'cold-start' ? `Cold start on ${provider}` : action)
+    if (!code) return
+    btn.disabled = true
+    said(`${action}: working…`)
+    try {
+      const r = await fetch(`${API}/api/action`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action, code, provider, role: 'primary' }),
+      }).then((r) => r.json())
+      // The same screen that offered the button says what the button did.
+      said(r.ok
+        ? `${action}: accepted. Watch Telegram for the result.`
+        : `${action}: refused — ${r.error}`)
+    } catch (err) {
+      said(`${action}: could not reach the control plane. ${err}`)
+    } finally {
+      btn.disabled = false
+      load()
+    }
+  })
+})
+
+load()
+setInterval(load, 30000)
+</script>
+</body>
+</html>

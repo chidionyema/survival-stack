@@ -1,0 +1,106 @@
+# Survival Stack — serverless control plane
+
+The vault box is deleted. Everything that used to run on it — the Telegram bot,
+the provider drivers, the secrets, the shadow-test cron — runs in one Cloudflare
+Worker. There is no machine in the recovery path that can die and take the
+recovery tooling with it.
+
+Specs: [`docs/SURVIVAL_STACK_v5.0.md`](docs/SURVIVAL_STACK_v5.0.md) (original) and
+[`docs/SURVIVAL_STACK_v5.1_CORRECTION.md`](docs/SURVIVAL_STACK_v5.1_CORRECTION.md)
+(the vault-less correction this code implements).
+
+## What is here
+
+| Path | What it is |
+|---|---|
+| `src/index.js` | Router: Telegram webhook, `/im-alive` callback, Lighthouse API, degraded mode, cron |
+| `src/totp.js` | RFC 6238 on WebCrypto — no dependency, runs in Worker and Node alike |
+| `src/coldstart.js` | Nonce mint → provision → callback → DNS. The whole lifecycle |
+| `src/providers/` | One file per provider. Adding AWS is one file and one line |
+| `src/degraded.js` | Mode 4: origin dead, edge sells, orders queue in R2 |
+| `src/cloudinit.js` | The document that makes a bare VM into a running box |
+| `lighthouse/index.html` | The static page. Loads when every server is ash |
+| `scripts/setup.sh` | One pass, one time. Stores secrets in Cloudflare, prints none |
+| `scripts/exit-drill.sh` | Proves you can leave. Run it on a schedule |
+
+Zero runtime dependencies. `wrangler` is a dev tool, not a dependency of the code.
+
+## Set it up
+
+```bash
+npm install
+npm test          # 27 tests, no network
+npm run secrets   # the wizard: logins, stores, deploys, points Telegram at it
+```
+
+The wizard asks for the Cloudflare login, creates the KV namespace and the two R2
+buckets, takes each secret with the echo off, deploys, and registers the Telegram
+webhook with a freshly generated secret token. It never prints a secret back.
+
+Then publish `lighthouse/` to Cloudflare Pages and open it once with
+`?api=https://<your-worker>.workers.dev` — it remembers the URL after that.
+
+## Operate it
+
+```
+/status                          health of both boxes, DNS, last shadow test
+/cold-start hetzner 123456       new primary; DNS moves only when it is healthy
+/cold-start vultr standby 123456 build a standby somewhere else
+/promote 123456                  standby takes the apex record
+/deploy v1.2.3 123456            blue/green onto a fresh box
+/destroy 203.0.113.9 123456      remove a box and forget it
+/shadow-test 123456              run the Sunday drill now
+/verify                          full JSON, both boxes probed
+```
+
+The six digits at the end of the line are the TOTP. Every command that spends
+money or moves traffic requires one, each code works once, and a control plane
+with no `TOTP_SECRET` refuses every command rather than falling open.
+
+## How a cold start actually runs
+
+A Worker cannot sit and watch a VM boot, so it does not try.
+
+1. TOTP checked, a 32-byte nonce minted into KV with a 15-minute life
+2. The provider API is called with a cloud-init document carrying that nonce
+3. The VM installs Docker, restores the database from R2, starts Caddy
+4. The VM `POST`s `/im-alive` with the nonce and its own IP
+5. The nonce is burned, DNS moves, Telegram says how long it took
+
+Nothing polls. A box that never reports in is caught by the five-minute sweep,
+destroyed, and reported as a failure with a retry command.
+
+## Two DNS records, and why
+
+The apex `A` record is what customers resolve and what failover moves. Two
+grey-cloud records, `p1.<domain>` and `p2.<domain>`, point at the primary and the
+standby by name. That is what lets the health check and the degraded-mode proxy
+reach a specific box with a valid certificate, on a free plan, without the
+Worker fetching its own hostname in a loop. Caddy is told to serve both names.
+
+## The exit
+
+`scripts/exit-drill.sh` copies the code, both R2 buckets and the control plane to
+local disk and prints the elapsed seconds. R2 is S3-compatible, the app is a
+Docker image, and the control plane is standard JavaScript on Web APIs — it ports
+to Lambda, Deno Deploy, or a $6 box. Run the drill on a schedule. When it goes
+red, moving off is the job.
+
+## Tests
+
+Types where possible, properties where not, incident tests for real bugs — no
+example tests of orchestration.
+
+- **Property** — base32 round-trip, TOTP generate/verify, wrong-secret rejection,
+  clock drift at the window edge, malformed input, nonce single-use, forged
+  nonce changes nothing, the sweep's 15-minute boundary, secret redaction
+- **Invariant** — cloud-init refuses to render with a missing value, leaves no
+  placeholder, puts secrets only in the `0600` file
+- **Incident** — a bad base32 secret refuses rather than authenticating
+
+```
+$ npm test
+ℹ tests 27
+ℹ pass 27
+ℹ fail 0
+```

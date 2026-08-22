@@ -1,0 +1,20 @@
+{
+  "name": "survival-stack",
+  "version": "5.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Serverless control plane. The vault box is deleted.",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "dev": "npx wrangler@latest dev",
+    "deploy": "npx wrangler@latest deploy",
+    "tail": "npx wrangler@latest tail",
+    "secrets": "bash scripts/setup.sh"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "wrangler": "^4.125.0"
+  }
+}

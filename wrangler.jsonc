@@ -1,0 +1,37 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "survival-control-plane",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // State. KV holds cold-start jobs and TOTP replay guards (small, hot).
+  // R2 holds the audit log, the degraded-mode catalog and queued orders.
+  "kv_namespaces": [
+    { "binding": "STATE", "id": "REPLACE_WITH_KV_ID" }
+  ],
+  "r2_buckets": [
+    { "binding": "AUDIT", "bucket_name": "survival-audit" },
+    { "binding": "DATA", "bucket_name": "survival-data" }
+  ],
+
+  // Shadow test: Sunday 03:00 UTC. Stale-job sweep: every 5 minutes.
+  "triggers": {
+    "crons": ["0 3 * * SUN", "*/5 * * * *"]
+  },
+
+  "vars": {
+    "DOMAIN": "REPLACE_WITH_DOMAIN",
+    "CONTROL_URL": "https://survival-control-plane.REPLACE.workers.dev",
+    "ENGINE_IMAGE": "ghcr.io/REPLACE/engine:latest",
+    "ENGINE_PORT": "8080",
+    "DB_TYPE": "sqlite",
+    "DB_BACKUP_IMAGE": "ghcr.io/REPLACE/survival-sidecar-sqlite:latest",
+    "DB_DATA_PATH": "/data",
+    "R2_BUCKET": "survival-data",
+    "R2_ENDPOINT": "https://REPLACE.r2.cloudflarestorage.com",
+    "SHADOW_PROVIDERS": "hetzner,digitalocean,vultr"
+  },
+
+  "observability": { "enabled": true }
+}

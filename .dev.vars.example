@@ -1,0 +1,17 @@
+# Local development only. Never committed. In production these are
+# `wrangler secret put` values, encrypted by Cloudflare, readable by the Worker alone.
+TOTP_SECRET=JBSWY3DPEHPK3PXP
+TELEGRAM_BOT_TOKEN=000000:replace
+TELEGRAM_CHAT_ID=000000
+TELEGRAM_WEBHOOK_SECRET=replace-with-32-random-bytes
+CF_API_TOKEN=replace
+CF_ZONE_ID=replace
+CF_DNS_RECORD_ID=replace
+HETZNER_TOKEN=replace
+DIGITALOCEAN_TOKEN=replace
+VULTR_TOKEN=replace
+R2_ACCESS_KEY=replace
+R2_SECRET_KEY=replace
+STRIPE_SECRET_KEY=replace
+JWT_SECRET=replace
+SSH_KEY_NAME=survival
