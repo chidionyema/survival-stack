@@ -1,0 +1,36 @@
+name: dependencies
+
+# Every external host and every credential name this repository mentions must be
+# classified in .dependencies.json: either covered_by a drill on the estate
+# register, or dismissed with a reason a person wrote. There is no third state.
+#
+# The point is not the list. It is that a vendor cannot arrive without somebody
+# deciding what happens when it leaves. Before this gate existed, the estate had
+# taken on 33 hosts and 19 credential names that had never once been written
+# down in one place, and nobody could have said which of them could stop the
+# company.
+#
+# The auditor is one file and it lives in chidionyema/claude-guards, which is
+# public, so this needs no token and there is no vendored copy to drift. It
+# reads the git index rather than the working tree, so this run and a run on a
+# laptop are the same measurement.
+
+on: [pull_request, push]
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: the auditor
+        uses: actions/checkout@v4
+        with:
+          repository: chidionyema/claude-guards
+          path: .estate-auditor
+
+      - name: every dependency is drilled or dismissed
+        run: python3 .estate-auditor/drills/audit.py --ci --root . --deps .dependencies.json
