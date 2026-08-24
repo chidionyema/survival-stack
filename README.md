@@ -29,6 +29,7 @@ must do, and the five it does not have to.
 | `scripts/console/zone.mjs` | Moves a domain onto Cloudflare and refuses to say ready unless both nameserver sets answer identically |
 | `scripts/cf-bootstrap.sh` | New machine to working credential: one command, three clicks. macOS, Linux, WSL, Windows |
 | `scripts/migrate.sh` | Move a domain onto Cloudflare. One command, nothing typed |
+| `scripts/cutover.mjs` | Point the domain at a box, by IP. Refuses a box that is not serving, and `--rollback` puts back exactly what was there |
 | `scripts/lib/cf-auth.mjs` | Finds a Cloudflare credential, or catches one off the clipboard into the keychain. Mints an hour-long token per run where the account allows it |
 | `scripts/exit-drill.sh` | Proves you can leave. Run it on a schedule |
 
