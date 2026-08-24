@@ -11,7 +11,7 @@ import { isLoggedIn, sigv4Headers } from '../scripts/console/checks.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const sh = (cmd, args, opts = {}) => new Promise((res) =>
-  execFile(cmd, args, { cwd: ROOT, ...opts }, (e, o, s) => res({ code: e?.code ?? 0, out: `${o}${s}` })))
+  execFile(cmd, args, { cwd: ROOT, ...opts }, (e, o, s) => res({ code: e?.code ?? 0, out: `${o}${s}`, stdout: o })))
 
 describe('incident: wrangler whoami exits 0 while saying you are not logged in', () => {
   // The wizard ran `whoami >/dev/null || login`, so login never fired and setup
@@ -44,7 +44,8 @@ describe('the QR code on the setup page', () => {
       }`)
     const read = await sh('/usr/bin/osascript', ['-l', 'JavaScript', decoder, png])
     await Promise.all([unlink(png).catch(() => {}), unlink(decoder).catch(() => {})])
-    assert.equal(read.out.trim(), uri)
+    // stdout only: CoreImage on a hosted Mac writes an IOService warning to stderr.
+    assert.equal(read.stdout.trim(), uri)
   })
 })
 
