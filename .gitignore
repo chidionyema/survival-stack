@@ -10,3 +10,4 @@ lab/state/*
 .crew/
 __pycache__/
 .migration/
+.dependencies.json
