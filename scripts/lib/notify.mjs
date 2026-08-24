@@ -155,7 +155,11 @@ export async function notify(payload, {
     })())
   }
 
-  await Promise.all(jobs)
+  // AbortSignal.timeout's timer is unref'd. A fetch that only settles on abort
+  // let the event loop drain first, so notify() never returned (CI run
+  // 32764888678, "Promise resolution is still pending"). Hold the loop open.
+  const hold = setTimeout(() => {}, timeoutMs)
+  try { await Promise.all(jobs) } finally { clearTimeout(hold) }
   return out
 }
 
