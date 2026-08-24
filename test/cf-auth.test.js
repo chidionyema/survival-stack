@@ -12,6 +12,13 @@ import { join } from 'node:path'
 import { readFile } from 'node:fs/promises'
 import * as auth from '../scripts/lib/cf-auth.mjs'
 
+// Incident 2026-08-24: this suite wrote to the founder's real pasteboard. Every
+// clipboard read/write below goes to a private file instead.
+import { mkdtempSync as _mkdtemp } from 'node:fs'
+import { tmpdir as _tmpdir } from 'node:os'
+import { join as _join } from 'node:path'
+process.env.CF_CLIPBOARD_FILE = _join(_mkdtemp(_join(_tmpdir(), 'cf-clip-')), 'clipboard')
+
 const run = promisify(execFile)
 const WRANGLER = join(process.cwd(), 'node_modules', '.bin', 'wrangler')
 
@@ -117,8 +124,9 @@ test('the keychain round-trips, and forgetting actually forgets', async (t) => {
 })
 
 test('the clipboard watcher takes a token and leaves everything else alone', async (t) => {
-  const pbcopy = async (s) => {
-    const p = execFile('/usr/bin/pbcopy')
+  const writeClip = async (s) => {
+    const w = await auth.clipboardWriter()
+    const p = execFile(w.cmd, w.args)
     p.stdin.end(s)
     await new Promise((r) => p.on('close', r))
   }
@@ -126,24 +134,25 @@ test('the clipboard watcher takes a token and leaves everything else alone', asy
   if (original === null) return t.skip('no clipboard here')
 
   try {
-    await pbcopy('some notes the founder had copied earlier')
+    await writeClip('some notes the founder had copied earlier')
     const token = 'z'.repeat(40)
 
     // The token lands a moment after the watcher starts, as it would in life.
     const watching = auth.waitForTokenOnClipboard({ seconds: 6, validate: async () => ({ ok: true, note: 'valid' }) })
-    setTimeout(() => pbcopy('a password, copied by mistake'), 300)
-    setTimeout(() => pbcopy(token), 900)
+    setTimeout(() => writeClip('a password, copied by mistake'), 300)
+    setTimeout(() => writeClip(token), 900)
 
     const got = await watching
     assert.equal(got.token, token, 'the token was not picked up')
   } finally {
-    await pbcopy(original)
+    await writeClip(original)
   }
 })
 
 test('a token Cloudflare rejects is not accepted just because it is the right shape', async (t) => {
-  const pbcopy = async (s) => {
-    const p = execFile('/usr/bin/pbcopy')
+  const writeClip = async (s) => {
+    const w = await auth.clipboardWriter()
+    const p = execFile(w.cmd, w.args)
     p.stdin.end(s)
     await new Promise((r) => p.on('close', r))
   }
@@ -151,17 +160,17 @@ test('a token Cloudflare rejects is not accepted just because it is the right sh
   if (original === null) return t.skip('no clipboard here')
 
   try {
-    await pbcopy('starting point')
+    await writeClip('starting point')
     const watching = auth.waitForTokenOnClipboard({
       seconds: 3,
       validate: async () => ({ ok: false, note: 'Cloudflare rejected this token' }),
       onTick: () => {},
     })
-    setTimeout(() => pbcopy('y'.repeat(40)), 300)
+    setTimeout(() => writeClip('y'.repeat(40)), 300)
     const got = await watching
     assert.ok(!got.token, 'a rejected token was returned anyway')
   } finally {
-    await pbcopy(original)
+    await writeClip(original)
   }
 })
 
