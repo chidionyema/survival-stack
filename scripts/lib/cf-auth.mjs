@@ -274,7 +274,12 @@ export async function wranglerLoggedIn(wranglerPath) {
 
 // One reader per platform. Returned rather than run so a pre-flight check can
 // say which tool is missing and how to get it, before anything starts waiting.
+// CF_CLIPBOARD_FILE points both directions at a plain file instead of the
+// user's pasteboard. Tests set it: on 2026-08-24 the suite wrote "a password,
+// copied by mistake" and fake tokens to the founder's real clipboard mid-work,
+// and a run killed between a write and its finally leaves that text behind.
 export async function clipboardReader() {
+  if (process.env.CF_CLIPBOARD_FILE) return { cmd: '/bin/cat', args: [process.env.CF_CLIPBOARD_FILE] }
   const p = await platform()
   if (p === 'macos') return { cmd: '/usr/bin/pbpaste', args: [] }
   if (p === 'wsl' || p === 'windows') {
@@ -314,6 +319,7 @@ export async function clipboard() {
 // as this user can read it for as long as nobody copies anything else. Putting
 // one space there costs nothing and closes that window.
 export async function clipboardWriter() {
+  if (process.env.CF_CLIPBOARD_FILE) return { cmd: '/bin/sh', args: ['-c', 'cat > "$0"', process.env.CF_CLIPBOARD_FILE] }
   const p = await platform()
   if (p === 'macos') return { cmd: '/usr/bin/pbcopy', args: [] }
   if (p === 'wsl' || p === 'windows') {

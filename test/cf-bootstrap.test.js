@@ -9,6 +9,13 @@ import { promisify } from 'node:util'
 import { readFile } from 'node:fs/promises'
 import * as auth from '../scripts/lib/cf-auth.mjs'
 
+// Incident 2026-08-24: this suite wrote to the founder's real pasteboard. Every
+// clipboard read/write below goes to a private file instead.
+import { mkdtempSync as _mkdtemp } from 'node:fs'
+import { tmpdir as _tmpdir } from 'node:os'
+import { join as _join } from 'node:path'
+process.env.CF_CLIPBOARD_FILE = _join(_mkdtemp(_join(_tmpdir(), 'cf-clip-')), 'clipboard')
+
 const run = promisify(execFile)
 
 const withFetch = async (handler, fn) => {
@@ -173,8 +180,9 @@ test('incident: a token copied before the tool started was waited for anyway', a
   // The watcher used to snapshot the clipboard and exclude it, so copying the
   // token first - the obvious thing to do - meant waiting out the whole window
   // for a copy that had already happened. Nothing was printed while it waited.
-  const pbcopy = async (s) => {
-    const p = execFile('/usr/bin/pbcopy')
+  const writeClip = async (s) => {
+    const w = await auth.clipboardWriter()
+    const p = execFile(w.cmd, w.args)
     p.stdin.end(s)
     await new Promise((r) => p.on('close', r))
   }
@@ -183,7 +191,7 @@ test('incident: a token copied before the tool started was waited for anyway', a
 
   try {
     const already = 'q'.repeat(44)
-    await pbcopy(already)
+    await writeClip(already)
     const got = await auth.waitForTokenOnClipboard({
       seconds: 3,
       validate: async () => ({ ok: true, note: 'valid' }),
@@ -191,6 +199,6 @@ test('incident: a token copied before the tool started was waited for anyway', a
     })
     assert.equal(got.token, already, 'a token already on the clipboard was ignored')
   } finally {
-    await pbcopy(original)
+    await writeClip(original)
   }
 })
