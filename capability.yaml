@@ -1,0 +1,12 @@
+id: auto-survival-stack
+name: survival-stack
+repo: survival-stack
+path: survival-stack
+state: NO_CLUSTER_HOME
+git_branch: main
+last_commit: '2026-08-24'
+code_files: 55
+test_files: 17
+indicators:
+- package.json
+requires_deep_review: true
