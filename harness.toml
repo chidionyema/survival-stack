@@ -1,0 +1,7 @@
+# How this repo is tested, and how the harness should test it.
+test = "node --test test/*.test.js"
+
+# The subset that is deterministic inside a hermetic sandbox: no network, no host
+# clipboard tool, no real credential. Tests excluded here are environment-dependent,
+# not broken, and the harness reports them as such rather than as failures.
+sandbox_test = "node --test test/cf-auth.test.js test/cf-bootstrap.test.js test/cloudinit.test.js test/coldstart.property.test.js test/cutover.test.js"
